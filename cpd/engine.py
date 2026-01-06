@@ -1,0 +1,90 @@
+import asyncio
+from typing import List, Dict
+from cpd.http_client import HttpClient
+from cpd.utils.logger import logger
+
+class Engine:
+    def __init__(self, concurrency: int = 50, timeout: int = 10, headers: Dict[str, str] = None):
+        self.concurrency = concurrency
+        self.timeout = timeout
+        self.headers = headers or {}
+        self.headers = headers or {}
+
+    async def run(self, urls: List[str]):
+        """
+        Main execution loop.
+        """
+        # Worker Pool Pattern
+        queue = asyncio.Queue()
+        
+        # Populate queue
+        for url in urls:
+            queue.put_nowait(url)
+            
+        # Create workers
+        workers = []
+        all_findings = []
+        
+        async def worker():
+             while True:
+                 try:
+                     url = queue.get_nowait()
+                 except asyncio.QueueEmpty:
+                     break
+                 
+                 try:
+                     result = await self._process_url(client, url)
+                     if result:
+                         all_findings.extend(result)
+                 except Exception as e:
+                     logger.error(f"Error processing {url}: {e}")
+                 finally:
+                     queue.task_done()
+
+        async with HttpClient(timeout=self.timeout) as client:
+            # Launch workers
+            for _ in range(self.concurrency):
+                workers.append(asyncio.create_task(worker()))
+            
+            # Wait for all workers to finish
+            await asyncio.gather(*workers)
+            
+            return all_findings
+
+    async def _process_url(self, client: HttpClient, url: str):
+        from cpd.logic.baseline import BaselineAnalyzer
+        
+        
+        # No semaphore needed, worker count limits concurrency
+        logger.info(f"Processing {url}")
+        
+        # 0. Cache Validation
+        from cpd.logic.validator import CacheValidator
+        validator = CacheValidator()
+        is_cached, reason = await validator.analyze(client, url)
+        
+        if is_cached:
+            logger.info(f"Cache detected on {url}: {reason}")
+        else:
+             logger.warning(f"Target {url} does not appear to be using a cache ({reason}). Findings might be invalid.")
+            
+        # 1. Baseline Analysis
+        analyzer = BaselineAnalyzer(headers=self.headers)
+        baseline = await analyzer.analyze(client, url)
+        
+        if not baseline:
+            logger.error(f"Could not establish baseline for {url}")
+            return
+
+        logger.info(f"Baseline established for {url} - Stable: {baseline.is_stable}, Hash: {baseline.body_hash[:8]}")
+        
+        # 2. Poisoning Simulation
+        from cpd.logic.poison import Poisoner
+        poisoner = Poisoner(baseline, headers=self.headers)
+        findings = await poisoner.run(client)
+        if findings:
+            logger.info(f"Scan finished for {url} - Findings: {len(findings)}")
+            return findings
+        else:
+            logger.info(f"Scan finished for {url} - No vulnerabilities found")
+            return []
