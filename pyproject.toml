@@ -1,0 +1,27 @@
+[tool.poetry]
+name = "cpd"
+version = "0.1.0"
+description = "A high-concurrency CLI tool for detecting web cache poisoning vulnerabilities."
+authors = ["Antigravity <antigravity@gemini.google.com>"]
+readme = "README.md"
+packages = [{include = "cpd"}]
+
+[tool.poetry.dependencies]
+python = "^3.9"
+click = "^8.1.7"
+aiohttp = "^3.9.1"
+requests = "^2.31.0"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^7.4.3"
+pytest-asyncio = "^0.23.2"
+black = "^23.11.0"
+isort = "^5.12.0"
+mypy = "^1.7.1"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.poetry.scripts]
+cpd = "cpd.main:cli"
