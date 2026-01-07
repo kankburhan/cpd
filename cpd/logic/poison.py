@@ -56,6 +56,12 @@ class Poisoner:
 
             # Unkeyed Query Parameter
             {"name": "Unkeyed-Param", "type": "query_param", "param": "utm_content", "value": f"evil-{self.payload_id}"},
+
+            # Vercel / Next.js Targets
+            {"name": "Vercel-IP-Country-US", "header": "x-vercel-ip-country", "value": "US"},
+            {"name": "Vercel-Forwarded-For", "header": "x-vercel-forwarded-for", "value": "127.0.0.1"},
+            {"name": "NextJS-RSC", "type": "method_override", "header": "RSC", "value": "1"},
+            {"name": "NextJS-Router-State", "type": "method_override", "header": "Next-Router-State-Tree", "value": "1"},
         ]
 
     async def run(self, client: HttpClient) -> List[Dict]:
@@ -146,6 +152,43 @@ class Poisoner:
             verify_hash = hashlib.sha256(verify_resp['body']).hexdigest()
             
             if verify_resp['body'] == resp['body'] and verify_hash != self.baseline.body_hash:
+                 # STABILITY CHECK:
+                 # If the page is dynamic (e.g. rotating ads, timestamps), verifying it once might look like poisoning
+                 # if the "poisoned" request just happened to match the "verification" request (both being "Version 2" of the page).
+                 # We fetch verification URL AGAIN.
+                 verify_resp_2 = await client.request("GET", verify_url, headers=self.headers)
+                 if not verify_resp_2:
+                     return None
+                 
+                 verify_hash_2 = hashlib.sha256(verify_resp_2['body']).hexdigest()
+                 
+                 if verify_hash != verify_hash_2:
+                     logger.debug(f"Ignored {signature['name']} - Target appears dynamic (verification requests differed)")
+                     return None
+
+                 # DRIFT CHECK:
+                 # Check if the site globally "drifted" to this new state (Version B).
+                 # We fetch a FRESH baseline with a completely NEW cache buster.
+                 fresh_cb = f"cb={int(time.time())}_{random.randint(1000,9999)}"
+                 fresh_url = f"{self.baseline.url}?{fresh_cb}" if '?' not in self.baseline.url else f"{self.baseline.url}&{fresh_cb}"
+                 
+                 fresh_resp = await client.request("GET", fresh_url, headers=self.headers)
+                 if fresh_resp:
+                     fresh_hash = hashlib.sha256(fresh_resp['body']).hexdigest()
+                     # If the fresh baseline looks exactly like our "poisoned" verification, 
+                     # then the site just changed. It's not a poison finding.
+                     if fresh_hash == verify_hash:
+                         logger.debug(f"Ignored {signature['name']} - Target appears to have drifted (fresh baseline matches verification)")
+                         return None
+                     
+                     # CHAOTIC CHECK:
+                     # If the fresh baseline differs from the ORIGINAL baseline (and didn't match verification),
+                     # it means the site is constantly changing (A -> B -> C).
+                     # In this case, we can't trust that 'B' (verification) is a poisoning result vs just another random state.
+                     if fresh_hash != self.baseline.body_hash:
+                         logger.debug(f"Ignored {signature['name']} - Target appears chaotic (fresh baseline != original baseline)")
+                         return None
+
                  vuln_type = "PathNormalizationPoisoning" if signature.get("type") == "path" else "MethodOverridePoisoning"
                  msg = f"POTENTIAL VULNERABILITY: {vuln_type}. Clean URL {verify_url} served content from {target_url} (reproducing malicious behavior)"
                  logger.critical(msg)
@@ -153,7 +196,7 @@ class Poisoner:
                      "url": self.baseline.url,
                      "target_url": target_url,
                      "verify_url": verify_url,
-                     "vulnerability": "PathNormalizationPoisoning",
+                     "vulnerability": vuln_type,
                      "details": msg,
                      "signature": signature,
                      "severity": "HIGH"
@@ -161,6 +204,12 @@ class Poisoner:
             return None
 
         if signature['value'] in str(verify_resp['headers']) or signature['value'] in str(verify_resp['body']):
+             # False Positive Check: Was this value already in the baseline (body OR headers)?
+             in_baseline = signature['value'] in str(self.baseline.body) or signature['value'] in str(self.baseline.headers)
+             if in_baseline:
+                 logger.debug(f"Ignored {signature['name']} - Value '{signature['value']}' found in baseline response")
+                 return None
+
              msg = f"POTENTIAL VULNERABILITY: {signature['name']} reflected in response for {target_url}"
              logger.critical(msg)
              severity = "MEDIUM"

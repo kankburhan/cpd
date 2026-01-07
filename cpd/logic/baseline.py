@@ -10,6 +10,7 @@ class Baseline:
     status: int
     headers: Dict[str, str]
     body_hash: str
+    body: bytes = b""
     is_stable: bool = True
 
 class BaselineAnalyzer:
@@ -49,6 +50,7 @@ class BaselineAnalyzer:
             status=first['status'],
             headers=first['headers'],
             body_hash=first_hash,
+            body=first['body'],
             is_stable=is_stable
         )
 

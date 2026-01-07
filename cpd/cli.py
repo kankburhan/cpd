@@ -8,11 +8,12 @@ from cpd.engine import Engine
 @click.group()
 @click.option('--verbose', '-v', is_flag=True, help="Enable verbose logging.")
 @click.option('--quiet', '-q', is_flag=True, help="Suppress informational output.")
-def cli(verbose, quiet):
+@click.option('--log-level', '-l', help="Set log level (DEBUG, INFO, WARNING, ERROR, CRITICAL). overrides -v and -q.")
+def cli(verbose, quiet, log_level):
     """
     CachePoisonDetector (CPD) - A tool for detecting web cache poisoning vulnerabilities.
     """
-    setup_logger(verbose, quiet)
+    setup_logger(verbose, quiet, log_level)
 
 @cli.command()
 @click.option('--url', '-u', help="Single URL to scan.")
