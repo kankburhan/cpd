@@ -2,7 +2,8 @@
 name = "cpd"
 version = "0.1.0"
 description = "A high-concurrency CLI tool for detecting web cache poisoning vulnerabilities."
-authors = ["Antigravity <antigravity@gemini.google.com>"]
+authors = ["kankburhan <kankburhan@gmail.com>"]
+repository = "https://github.com/kankburhan/cpd"
 readme = "README.md"
 packages = [{include = "cpd"}]
 

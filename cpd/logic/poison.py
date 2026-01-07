@@ -181,6 +181,25 @@ class Poisoner:
                          logger.debug(f"Ignored {signature['name']} - Target appears to have drifted (fresh baseline matches verification)")
                          return None
                      
+                     # BENIGN POSITIVE CHECK:
+                     # Check if the "poisoned" verification response is structurally identical (or very similar) to the fresh baseline.
+                     # This catches cases where the attack was ignored by the server (200 OK -> 200 OK) but slight dynamic changes 
+                     # (timestamps, nonces) caused hash mismatch.
+                     if fresh_resp['status'] == verify_resp['status']:
+                         len_fresh = len(fresh_resp['body'])
+                         len_verify = len(verify_resp['body'])
+                         # Tolerance: Allow up to 1% difference or 50 bytes, whichever is smaller? 
+                         # Use strict length for now, or very small diff.
+                         # If lengths are EXACTLY equal, it's very likely a false positive caused by minor byte changes (timestamp).
+                         if len_fresh == len_verify:
+                             logger.debug(f"Ignored {signature['name']} - Content length identical to fresh baseline ({len_verify} bytes). Likely benign dynamic content.")
+                             return None
+                         
+                         # Optional: Tolerance check (e.g., < 20 bytes diff)
+                         if abs(len_fresh - len_verify) < 20:
+                             logger.debug(f"Ignored {signature['name']} - Content length similar to fresh baseline (diff {abs(len_fresh - len_verify)}). Likely benign.")
+                             return None
+                     
                      # CHAOTIC CHECK:
                      # If the fresh baseline differs from the ORIGINAL baseline (and didn't match verification),
                      # it means the site is constantly changing (A -> B -> C).

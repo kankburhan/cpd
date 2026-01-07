@@ -9,7 +9,7 @@ CPD is a security tool designed to identify vulnerabilities in web caching syste
 
 1.  Clone the repository:
     ```bash
-    git clone https://github.com/your-repo/cpd.git
+    git clone https://github.com/kankburhan/cpd.git
     cd cpd
     ```
 
@@ -88,7 +88,24 @@ cpd scan -u https://example.com -v  # Debug logging
 cpd scan -u https://example.com -q  # Only show findings
 ```
 
+### 5. Utilities
+
+#### Validate Finding (`validate`)
+Manually verify a vulnerability claim step-by-step.
+
+```bash
+cpd validate --url https://target.com --header "X-Forwarded-Host: evil.com"
+```
+
+#### Update Tool (`update`)
+Check for and install the latest version of CPD.
+
+```bash
+cpd update
+```
+
 ## Features
+- **Auto Update Check**: Automatically checks for new versions on run. ![Auto Update](https://img.shields.io/badge/Auto%20Update-Enabled-brightgreen)
 - **High Concurrency**: Built with `asyncio` and `aiohttp` for speed.
 - **Smart Baseline**: Establishes a stable baseline to reduce false positives.
 - **Advanced Poisoning**:

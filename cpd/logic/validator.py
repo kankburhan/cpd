@@ -6,13 +6,18 @@ class CacheValidator:
     def __init__(self):
         self.cache_headers = [
             "X-Cache",
-            "CF-Cache-Status",
-            "X-Varnish",
-            "Age",
-            "Via",
-            "X-Drupal-Cache",
-            "X-Proxy-Cache",
-            "Akamai-Cache-Status"
+            "CF-Cache-Status",     # Cloudflare
+            "X-Varnish",           # Varnish
+            "Age",                 # Standard
+            "Via",                 # Proxies
+            "X-Drupal-Cache",      # Drupal
+            "X-Proxy-Cache",       # Nginx
+            "Akamai-Cache-Status", # Akamai
+            "Cache-Status",        # Standard / Apache
+            "X-Cache-Status",      # Generic / Nginx
+            "X-Cache-Hits",        # Fastly
+            "Server-Timing",       # W3C / CDNs
+            "X-Cache-Detail"       # Apache
         ]
 
     async def analyze(self, client: HttpClient, url: str) -> Tuple[bool, Optional[str]]:
@@ -27,19 +32,25 @@ class CacheValidator:
         if not resp:
             return False, "Failed to fetch URL"
 
-        for header in self.cache_headers:
+        for header_name in self.cache_headers:
             for key in resp['headers']:
-                if key.lower() == header.lower():
+                if key.lower() == header_name.lower():
                     val = resp['headers'][key]
                     logger.info(f"Cache indicator found: {key}: {val}")
-                    # Some headers explicitly say MISS, but the presence of the header 
-                    # usually implies a caching layer is present, even if it missed.
+                    
+                    # Special handling for Server-Timing which is common but not always cache-related
+                    if key.lower() == 'server-timing':
+                        # Check for cache-related keywords in Server-Timing value
+                        val_lower = val.lower()
+                        if any(k in val_lower for k in ['cache', 'miss', 'hit', 'cdn-cache']):
+                             return True, f"Found cache indicator in Server-Timing: {val}"
+                        else:
+                            # If it's Server-Timing but doesn't mention cache, keep looking
+                            continue
+
                     return True, f"Found cache header: {key}"
 
         # 2. Heuristic/Behavioral Check (Optional)
-        # If no explicit headers, we could check for Age incrementing or valid Cache-Control
-        # For now, we'll rely on the most common headers.
-        
         # Check standard Cache-Control
         cc = resp['headers'].get('Cache-Control', '').lower()
         if 'public' in cc or 's-maxage' in cc:
