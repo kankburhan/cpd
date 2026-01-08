@@ -55,7 +55,22 @@ Read URLs from a text file (one URL per line).
 cpd scan --file urls.txt
 ```
 
-### 4. Advanced Options
+### 4. Raw Request Scan (`--request-file`)
+Scan using a raw HTTP request definition (e.g., copied from Burp Suite).
+
+```bash
+# Save your request to a file (e.g. request.txt)
+cpd scan --request-file request.txt
+```
+
+**Alternative: Direct String (`--raw`)**
+*Use with caution due to shell escaping characters.*
+```bash
+cpd scan --raw "GET /api/foo HTTP/1.1
+Host: example.com"
+```
+
+### 5. Advanced Options
 
 #### Custom Headers (`--header`)
 Add custom headers to every request (e.g., cookies, authorization). You can use this flag multiple times.

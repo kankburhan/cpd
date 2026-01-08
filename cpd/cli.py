@@ -55,13 +55,17 @@ def update():
 @cli.command()
 @click.option('--url', '-u', help="Single URL to scan.")
 @click.option('--file', '-f', type=click.File('r'), help="File containing URLs to scan.")
+@click.option('--request-file', '-r', '-burp', type=click.File('r'), help="File containing raw HTTP request (Burp format).")
+@click.option('--raw', help="Raw HTTP request string (use with caution).")
 @click.option('--concurrency', '-c', default=50, help="Max concurrent requests.")
 @click.option('--header', '-h', multiple=True, help="Custom header (e.g. 'Cookie: foo=bar'). Can be used multiple times.")
 @click.option('--output', '-o', help="File to save JSON results to.")
-def scan(url, file, concurrency, header, output):
+def scan(url, file, request_file, raw, concurrency, header, output):
     """
     Scan one or more URLs for cache poisoning vulnerabilities.
     """
+    from cpd.utils.parser import parse_raw_request
+
     # Parse headers
     custom_headers = {}
     if header:
@@ -90,7 +94,24 @@ def scan(url, file, concurrency, header, output):
                 urls.append(line)
 
     if not urls:
-        logger.error("No URLs provided. Use --url, --file, or pipe URLs via stdin.")
+        # Handle Raw Request
+        if request_file or raw:
+            content = request_file.read() if request_file else raw
+            try:
+                parsed = parse_raw_request(content)
+                logger.info(f"Loaded raw request: {parsed['method']} {parsed['url']}")
+                urls.append(parsed['url'])
+                
+                # Merge headers
+                combined = parsed['headers']
+                combined.update(custom_headers)
+                custom_headers = combined
+            except Exception as e:
+                logger.error(f"Failed to parse raw request: {e}")
+                return
+
+    if not urls:
+        logger.error("No targets specified. Use --url, --file, --request-file, or pipe URLs via stdin.")
         return
 
     logger.info(f"Starting scan for {len(urls)} URLs with concurrency {concurrency}")
