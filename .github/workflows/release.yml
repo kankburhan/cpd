@@ -28,7 +28,7 @@ jobs:
     - name: Publish to PyPI
       env:
         POETRY_PYPI_TOKEN_PYPI: ${{ secrets.PYPI_TOKEN }}
-      run: poetry publish --build
+      run: poetry publish
       continue-on-error: true # For now, just a placeholder if token isn't set
       
     - name: Create Release
