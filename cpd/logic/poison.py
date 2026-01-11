@@ -63,7 +63,7 @@ class Poisoner:
             {"name": "X-Forwarded-SSL", "header": "X-Forwarded-SSL", "value": "on"},
             {"name": "X-Cluster-Client-IP", "header": "X-Cluster-Client-IP", "value": "127.0.0.1"},
             {"name": "Akamai-Pragma", "header": "Pragma", "value": "akamai-x-cache-on"},
-            {"name": "CF-Cache-Status", "header": "CF-Cache-Status", "value": "DYNAMIC"},
+            # Removed CF-Cache-Status: DYNAMIC due to high FP rate (common response value)
             {"name": "Referer-Reflect", "header": "Referer", "value": f"https://evil-{self.payload_id}.com"},
             {"name": "Cache-Control-Poison", "header": "Cache-Control", "value": "public, max-age=3600"},
             {"name": "X-Original-Host", "header": "X-Original-Host", "value": f"evil-{self.payload_id}.com"},
