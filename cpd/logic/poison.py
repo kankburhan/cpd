@@ -369,6 +369,24 @@ class Poisoner:
         if not resp:
             return
 
+        # Optimization: If the "poisoned" response is identical to the baseline, 
+        # it likely means the server normalized the request or ignored the header/method.
+        # This prevents "Backslash" or "Method Override" false positives where the 
+        # server just serves the standard content (Aliasing/Normalization).
+        if signature.get("type") in ["path", "method_override"]:
+            # Check length first for speed
+            if len(resp['body']) == len(self.baseline.body):
+                if resp['body'] == self.baseline.body:
+                    logger.debug(f"Ignored {signature['name']} - Poison response identical to baseline (Benign Normalization/Aliasing)")
+                    return None
+            
+            # Additional check: If standard hash matches (in case body object differs but content same)
+            import hashlib
+            resp_hash = hashlib.sha256(resp['body']).hexdigest()
+            if resp_hash == self.baseline.body_hash:
+                 logger.debug(f"Ignored {signature['name']} - Poison hash identical to baseline hash")
+                 return None
+
         # 2. Verification Request (Clean URL with same cache key/buster)
         verify_resp = await client.request("GET", verify_url, headers=self.headers)
         if not verify_resp:
