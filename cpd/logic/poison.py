@@ -38,6 +38,7 @@ class Poisoner:
             
             # Path Normalization / Traversal (User Requested)
             {"name": "Backslash-Path-Replace", "type": "path", "mutation": "backslash_replace"},
+            {"name": "Backslash-Last-Path-Replace", "type": "path", "mutation": "backslash_last_slash"},
             
             # Fat GET (Body Poisoning)
             {"name": "Fat-GET", "type": "fat_get", "header": "X-Poison-Fat", "value": f"evil-{self.payload_id}"},
@@ -62,6 +63,14 @@ class Poisoner:
             {"name": "Vercel-Forwarded-For", "header": "x-vercel-forwarded-for", "value": "127.0.0.1"},
             {"name": "NextJS-RSC", "type": "method_override", "header": "RSC", "value": "1"},
             {"name": "NextJS-Router-State", "type": "method_override", "header": "Next-Router-State-Tree", "value": "1"},
+
+            # Next.js Prefetch / Data Poisoning
+            {"name": "NextJS-Middleware-Prefetch", "type": "method_override", "header": "X-Middleware-Prefetch", "value": "1"},
+            {"name": "NextJS-Data", "type": "method_override", "header": "X-Nextjs-Data", "value": "1"},
+            {"name": "NextJS-Purpose-Prefetch", "type": "method_override", "header": "Purpose", "value": "prefetch"},
+
+            # Range Header Poisoning (DoS)
+            {"name": "Range-Poisoning", "type": "method_override", "header": "Range", "value": "bytes=0-0"},
         ]
 
     async def run(self, client: HttpClient) -> List[Dict]:
@@ -92,12 +101,10 @@ class Poisoner:
             if signature["mutation"] == "backslash_replace":
                 # Replace valid path separators with backslashes
                 # e.g. https://example.com/foo/bar -> https://example.com\foo\bar
-                # Need to be careful with protocol schema 'https://'
                 from urllib.parse import urlparse
                 parsed = urlparse(self.baseline.url)
                 
                 # Reconstruct with backslashes in path
-                # Note: urlparse path might be empty or just '/'
                 malicious_path = parsed.path.replace('/', '\\')
                 if not malicious_path or malicious_path == '\\':
                      malicious_path = '\\' # Ensure at least root
@@ -106,6 +113,30 @@ class Poisoner:
                 # We append cache buster manually
                 target_url = f"{parsed.scheme}://{parsed.netloc}{malicious_path}?{cache_buster}"
                 verify_url = f"{self.baseline.url}?{cache_buster}" if '?' not in self.baseline.url else f"{self.baseline.url}&{cache_buster}"
+            
+            elif signature["mutation"] == "backslash_last_slash":
+                # Replace ONLY the LAST slash in the path with a backslash
+                # e.g. /path1/subpath/path -> /path1/subpath\path
+                from urllib.parse import urlparse
+                parsed = urlparse(self.baseline.url)
+                path = parsed.path
+                
+                if '/' in path:
+                    # Rfind to locate last slash, replace it
+                    last_slash_index = path.rfind('/')
+                    # Be careful if it's the very first char and only char e.g. "/"
+                    if last_slash_index != -1:
+                        malicious_path = path[:last_slash_index] + '\\' + path[last_slash_index+1:]
+                        if malicious_path == '\\': 
+                             pass # "/" -> "\" is same as replace all, effectively
+                    else:
+                        malicious_path = path 
+                else:
+                    malicious_path = path
+                
+                target_url = f"{parsed.scheme}://{parsed.netloc}{malicious_path}?{cache_buster}"
+                verify_url = f"{self.baseline.url}?{cache_buster}" if '?' not in self.baseline.url else f"{self.baseline.url}&{cache_buster}"
+
         
         elif signature.get("type") == "fat_get":
              # Fat GET: Send GET request with a body
@@ -130,8 +161,6 @@ class Poisoner:
         
         body = None
         if signature.get("type") == "fat_get":
-             # Many servers ignore GET bodies, but some process them.
-             # Typically used to override a callback parameter.
              body = f"callback=evil{self.payload_id}"
 
         resp = await client.request("GET", target_url, headers=headers, data=body)
@@ -144,18 +173,11 @@ class Poisoner:
             return
 
         if signature.get("type") in ["path", "method_override"]:
-            # Check if verification response matches the malicious response
-            # AND differs from the original baseline (to rule out false positives where malicious == baseline)
-            
             # Calculate verify hash
             import hashlib
             verify_hash = hashlib.sha256(verify_resp['body']).hexdigest()
             
             if verify_resp['body'] == resp['body'] and verify_hash != self.baseline.body_hash:
-                 # STABILITY CHECK:
-                 # If the page is dynamic (e.g. rotating ads, timestamps), verifying it once might look like poisoning
-                 # if the "poisoned" request just happened to match the "verification" request (both being "Version 2" of the page).
-                 # We fetch verification URL AGAIN.
                  verify_resp_2 = await client.request("GET", verify_url, headers=self.headers)
                  if not verify_resp_2:
                      return None
@@ -166,31 +188,19 @@ class Poisoner:
                      logger.debug(f"Ignored {signature['name']} - Target appears dynamic (verification requests differed)")
                      return None
 
-                 # DRIFT CHECK:
-                 # Check if the site globally "drifted" to this new state (Version B).
-                 # We fetch a FRESH baseline with a completely NEW cache buster.
                  fresh_cb = f"cb={int(time.time())}_{random.randint(1000,9999)}"
                  fresh_url = f"{self.baseline.url}?{fresh_cb}" if '?' not in self.baseline.url else f"{self.baseline.url}&{fresh_cb}"
                  
                  fresh_resp = await client.request("GET", fresh_url, headers=self.headers)
                  if fresh_resp:
                      fresh_hash = hashlib.sha256(fresh_resp['body']).hexdigest()
-                     # If the fresh baseline looks exactly like our "poisoned" verification, 
-                     # then the site just changed. It's not a poison finding.
                      if fresh_hash == verify_hash:
                          logger.debug(f"Ignored {signature['name']} - Target appears to have drifted (fresh baseline matches verification)")
                          return None
                      
-                     # BENIGN POSITIVE CHECK:
-                     # Check if the "poisoned" verification response is structurally identical (or very similar) to the fresh baseline.
-                     # This catches cases where the attack was ignored by the server (200 OK -> 200 OK) but slight dynamic changes 
-                     # (timestamps, nonces) caused hash mismatch.
                      if fresh_resp['status'] == verify_resp['status']:
                          len_fresh = len(fresh_resp['body'])
                          len_verify = len(verify_resp['body'])
-                         # Tolerance: Allow up to 1% difference or 50 bytes, whichever is smaller? 
-                         # Use strict length for now, or very small diff.
-                         # If lengths are EXACTLY equal, it's very likely a false positive caused by minor byte changes (timestamp).
                          if len_fresh == len_verify:
                              logger.debug(f"Ignored {signature['name']} - Content length identical to fresh baseline ({len_verify} bytes). Likely benign dynamic content.")
                              return None
@@ -200,10 +210,6 @@ class Poisoner:
                              logger.debug(f"Ignored {signature['name']} - Content length similar to fresh baseline (diff {abs(len_fresh - len_verify)}). Likely benign.")
                              return None
                      
-                     # CHAOTIC CHECK:
-                     # If the fresh baseline differs from the ORIGINAL baseline (and didn't match verification),
-                     # it means the site is constantly changing (A -> B -> C).
-                     # In this case, we can't trust that 'B' (verification) is a poisoning result vs just another random state.
                      if fresh_hash != self.baseline.body_hash:
                          logger.debug(f"Ignored {signature['name']} - Target appears chaotic (fresh baseline != original baseline)")
                          return None
