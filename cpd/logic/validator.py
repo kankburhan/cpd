@@ -17,7 +17,15 @@ class CacheValidator:
             "X-Cache-Status",      # Generic / Nginx
             "X-Cache-Hits",        # Fastly
             "Server-Timing",       # W3C / CDNs
-            "X-Cache-Detail"       # Apache
+            "X-Cache-Detail",      # Apache
+            # NEW HEADERS
+            "X-Cache-Lookup",      # Varnish
+            "X-Fastly-Cache-Status",  # Fastly (more specific)
+            "X-Served-By",         # Fastly/Varnish
+            "X-Timer",             # Fastly
+            "X-Backend",           # Custom CDNs
+            "X-Nginx-Cache-Status",  # Nginx
+            "X-Proxy-Cache-Status",  # Squid
         ]
 
     async def analyze(self, client: HttpClient, url: str) -> Tuple[bool, Optional[str]]:

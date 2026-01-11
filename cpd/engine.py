@@ -8,9 +8,16 @@ class Engine:
         self.concurrency = concurrency
         self.timeout = timeout
         self.headers = headers or {}
-        self.headers = headers or {}
+        self.stats = {
+            'total_urls': 0,
+            'skipped_status': 0,
+            'skipped_unstable': 0,
+            'tested': 0,
+            'findings': 0
+        }
 
     async def run(self, urls: List[str]):
+        self.stats['total_urls'] = len(urls)
         """
         Main execution loop.
         """
@@ -49,6 +56,9 @@ class Engine:
             # Wait for all workers to finish
             await asyncio.gather(*workers)
             
+            logger.info(f"Scan complete: {self.stats['tested']}/{self.stats['total_urls']} tested, "
+                       f"{self.stats['skipped_status']} skipped (bad status), "
+                       f"{self.stats['skipped_unstable']} skipped (unstable)")
             return all_findings
 
     async def _process_url(self, client: HttpClient, url: str):
@@ -74,15 +84,24 @@ class Engine:
         
         if not baseline:
             logger.error(f"Could not establish baseline for {url}")
+            self.stats['skipped_status'] += 1
+            return
+
+        # NEW: Check stability
+        if not baseline.is_stable:
+            logger.warning(f"Skipping {url} due to instability.")
+            self.stats['skipped_unstable'] += 1
             return
 
         logger.info(f"Baseline established for {url} - Stable: {baseline.is_stable}, Hash: {baseline.body_hash[:8]}")
         
         # 2. Poisoning Simulation
+        self.stats['tested'] += 1
         from cpd.logic.poison import Poisoner
         poisoner = Poisoner(baseline, headers=self.headers)
         findings = await poisoner.run(client)
         if findings:
+            self.stats['findings'] += len(findings)
             logger.info(f"Scan finished for {url} - Findings: {len(findings)}")
             return findings
         else:

