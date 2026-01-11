@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "cpd-sec"
-version = "0.3.1"
+version = "0.3.2"
 description = "A high-concurrency CLI tool for detecting web cache poisoning vulnerabilities."
 authors = ["kankburhan <kankburhan@gmail.com>"]
 repository = "https://github.com/kankburhan/cpd"

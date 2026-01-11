@@ -55,6 +55,10 @@ class CacheValidator:
         cc = resp['headers'].get('Cache-Control', '').lower()
         if 'public' in cc or 's-maxage' in cc:
              return True, f"Cache-Control implies public caching: {cc}"
+        
+        # Check for max-age if 'private' is NOT present (implied public)
+        if 'max-age' in cc and 'private' not in cc and 'no-store' not in cc:
+             return True, f"Cache-Control implies cacheability (max-age present): {cc}"
 
         logger.warning(f"No obvious cache indicators found for {url}")
         return False, "No cache headers detected"
