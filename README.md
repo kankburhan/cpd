@@ -1,5 +1,11 @@
 # CachePoisonDetector (CPD-SEC)
 
+[![PyPI version](https://badge.fury.io/py/cpd-sec.svg)](https://badge.fury.io/py/cpd-sec)
+[![Python Versions](https://img.shields.io/pypi/pyversions/cpd-sec.svg)](https://pypi.org/project/cpd-sec/)
+[![CI](https://github.com/kankburhan/cpd/workflows/CI/badge.svg)](https://github.com/kankburhan/cpd/actions)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
+
 A high-concurrency CLI tool for detecting web cache poisoning vulnerabilities.
 
 ## Overview
