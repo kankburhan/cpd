@@ -32,7 +32,8 @@ class ColoredFormatter(logging.Formatter):
         original_levelname = record.levelname
         record.levelname = f"{color}{original_levelname}{self.reset}"
         
-        formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+        # Format: CPD-SEC - [LEVEL] - Message
+        formatter = logging.Formatter(f"CPD-SEC - [%(levelname)s] - %(message)s")
         result = formatter.format(record)
         
         # Restore original levelname to avoid side effects
