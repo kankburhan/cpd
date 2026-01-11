@@ -25,8 +25,8 @@ class Poisoner:
             {"name": "X-Rewrite-URL", "header": "X-Rewrite-URL", "value": f"/poison-{self.payload_id}"},
             
             # Protocol / Port Manipulation
-            {"name": "X-Forwarded-Scheme", "header": "X-Forwarded-Scheme", "value": "http"},
-            {"name": "X-Forwarded-Proto", "header": "X-Forwarded-Proto", "value": "http"},
+            {"name": "X-Forwarded-Scheme", "type": "method_override", "header": "X-Forwarded-Scheme", "value": "http"},
+            {"name": "X-Forwarded-Proto", "type": "method_override", "header": "X-Forwarded-Proto", "value": "http"},
             {"name": "X-Forwarded-Port", "header": "X-Forwarded-Port", "value": "1111"},
             {"name": "X-Forwarded-Prefix", "header": "X-Forwarded-Prefix", "value": f"/evil-{self.payload_id}"},
             
@@ -59,8 +59,8 @@ class Poisoner:
             {"name": "Unkeyed-Param", "type": "query_param", "param": "utm_content", "value": f"evil-{self.payload_id}"},
 
             # Vercel / Next.js Targets
-            {"name": "Vercel-IP-Country-US", "header": "x-vercel-ip-country", "value": "US"},
-            {"name": "Vercel-Forwarded-For", "header": "x-vercel-forwarded-for", "value": "127.0.0.1"},
+            {"name": "Vercel-IP-Country-US", "type": "method_override", "header": "x-vercel-ip-country", "value": "US"},
+            {"name": "Vercel-Forwarded-For", "type": "method_override", "header": "x-vercel-forwarded-for", "value": "127.0.0.1"},
             {"name": "NextJS-RSC", "type": "method_override", "header": "RSC", "value": "1"},
             {"name": "NextJS-Router-State", "type": "method_override", "header": "Next-Router-State-Tree", "value": "1"},
 
@@ -229,6 +229,11 @@ class Poisoner:
             return None
 
         if signature['value'] in str(verify_resp['headers']) or signature['value'] in str(verify_resp['body']):
+             # Ignore short values (DoS/False Positive prevention)
+             if len(signature['value']) < 5:
+                 logger.debug(f"Ignored {signature['name']} - Value '{signature['value']}' too short for reliable reflection check")
+                 return None
+
              # False Positive Check: Was this value already in the baseline (body OR headers)?
              in_baseline = signature['value'] in str(self.baseline.body) or signature['value'] in str(self.baseline.headers)
              if in_baseline:
