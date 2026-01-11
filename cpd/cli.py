@@ -128,24 +128,47 @@ def update():
 @click.option('--file', '-f', type=click.File('r'), help="File containing URLs to scan.")
 @click.option('--request-file', '-r', '-burp', type=click.File('r'), help="File containing raw HTTP request (Burp format).")
 @click.option('--raw', help="Raw HTTP request string (use with caution).")
-@click.option('--concurrency', '-c', default=50, help="Max concurrent requests.")
+@click.option('--concurrency', '-c', type=int, default=None, help="Max concurrent requests.")
 @click.option('--header', '-h', multiple=True, help="Custom header (e.g. 'Cookie: foo=bar'). Can be used multiple times.")
 @click.option('--output', '-o', help="File to save JSON results to.")
-def scan(url, file, request_file, raw, concurrency, header, output):
+@click.option('--skip-unstable/--no-skip-unstable', default=None, help="Skip URLs with unstable baselines (default: skip)")
+@click.option('--rate-limit', type=int, default=None, help="Rate limit in requests per second (0 for no limit).")
+@click.option('--config', help="Path to YAML configuration file.")
+def scan(url, file, request_file, raw, concurrency, header, output, skip_unstable, rate_limit, config):
     """
     Scan one or more URLs for cache poisoning vulnerabilities.
     """
     from cpd.utils.parser import parse_raw_request
+    from cpd.config import load_config, DEFAULT_CONFIG
 
-    # Parse headers
-    custom_headers = {}
+    # 1. Load Configuration
+    # Prioritize: CLI > Config File > Defaults
+    cfg = load_config(config)
+    
+    # Resolve values
+    concurrency = concurrency if concurrency is not None else cfg.get('concurrency', DEFAULT_CONFIG['concurrency'])
+    rate_limit = rate_limit if rate_limit is not None else cfg.get('rate_limit', DEFAULT_CONFIG['rate_limit'])
+    
+    # Boolean flag logic: if CLI is None, use config, else use CLI
+    if skip_unstable is None:
+        skip_unstable = cfg.get('skip_unstable', DEFAULT_CONFIG['skip_unstable'])
+
+    # Merge headers: start with config headers, update with CLI headers
+    config_headers = cfg.get('headers', {})
+    
+    # Parse CLI headers
+    cli_headers = {}
     if header:
         for h in header:
             if ':' in h:
                 key, value = h.split(':', 1)
-                custom_headers[key.strip()] = value.strip()
+                cli_headers[key.strip()] = value.strip()
             else:
                 logger.warning(f"Invalid header format: {h}. Expected 'Key: Value'")
+    
+    # Combine (CLI overrides Config)
+    custom_headers = config_headers.copy()
+    custom_headers.update(cli_headers)
 
     urls = []
     if url:
@@ -187,7 +210,7 @@ def scan(url, file, request_file, raw, concurrency, header, output):
 
     logger.info(f"Starting scan for {len(urls)} URLs with concurrency {concurrency}")
     
-    engine = Engine(concurrency=concurrency, headers=custom_headers)
+    engine = Engine(concurrency=concurrency, headers=custom_headers, skip_unstable=skip_unstable, rate_limit=rate_limit)
     findings = asyncio.run(engine.run(urls))
     
     if findings:
@@ -197,8 +220,12 @@ def scan(url, file, request_file, raw, concurrency, header, output):
         
         if output:
             try:
-                with open(output, 'w') as f:
-                    json.dump(findings, f, indent=2)
+                if output.endswith('.html'):
+                    from cpd.utils.reporter import Reporter
+                    Reporter.generate_html_report(findings, output)
+                else:
+                    with open(output, 'w') as f:
+                        json.dump(findings, f, indent=2)
                 logger.info(f"Results saved to {output}")
             except IOError as e:
                 logger.error(f"Failed to write results to {output}: {e}")

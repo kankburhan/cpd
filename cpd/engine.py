@@ -4,10 +4,12 @@ from cpd.http_client import HttpClient
 from cpd.utils.logger import logger
 
 class Engine:
-    def __init__(self, concurrency: int = 50, timeout: int = 10, headers: Dict[str, str] = None):
+    def __init__(self, concurrency: int = 50, timeout: int = 10, headers: Dict[str, str] = None, skip_unstable: bool = True, rate_limit: int = 0):
         self.concurrency = concurrency
         self.timeout = timeout
         self.headers = headers or {}
+        self.skip_unstable = skip_unstable
+        self.rate_limit = rate_limit
         self.stats = {
             'total_urls': 0,
             'skipped_status': 0,
@@ -48,7 +50,7 @@ class Engine:
                  finally:
                      queue.task_done()
 
-        async with HttpClient(timeout=self.timeout) as client:
+        async with HttpClient(timeout=self.timeout, rate_limit=self.rate_limit) as client:
             # Launch workers
             for _ in range(self.concurrency):
                 workers.append(asyncio.create_task(worker()))
@@ -57,6 +59,7 @@ class Engine:
             await asyncio.gather(*workers)
             
             logger.info(f"Scan complete: {self.stats['tested']}/{self.stats['total_urls']} tested, "
+                       f"{self.stats['findings']} vulnerabilities found, "
                        f"{self.stats['skipped_status']} skipped (bad status), "
                        f"{self.stats['skipped_unstable']} skipped (unstable)")
             return all_findings
@@ -89,9 +92,12 @@ class Engine:
 
         # NEW: Check stability
         if not baseline.is_stable:
-            logger.warning(f"Skipping {url} due to instability.")
-            self.stats['skipped_unstable'] += 1
-            return
+            if self.skip_unstable:
+                logger.warning(f"Skipping {url} due to instability.")
+                self.stats['skipped_unstable'] += 1
+                return
+            else:
+                logger.warning(f"URL {url} is unstable - results may have false positives")
 
         logger.info(f"Baseline established for {url} - Stable: {baseline.is_stable}, Hash: {baseline.body_hash[:8]}")
         

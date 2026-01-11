@@ -305,6 +305,19 @@ class Poisoner:
             if signature.get("type") == "method_override":
                 logger.debug(f"Skipping {signature['name']} on 404 endpoint")
                 return None
+        
+        # NEW: Content-Type Validation
+        if signature.get("name") in ["Valid-User-Agent", "HAV-Cookie-Reflect"]:
+            # XSS-related payloads only work on HTML
+            if "html" not in self.baseline.content_type:
+                logger.debug(f"Skipping {signature['name']} on non-HTML content ({self.baseline.content_type})")
+                return None
+
+        # Skip method override on static files
+        if signature.get("type") == "method_override":
+            if any(ext in self.baseline.content_type for ext in ["image/", "video/", "audio/", "font/"]):
+                logger.debug(f"Skipping method override on static content ({self.baseline.content_type})")
+                return None
         headers = self.headers.copy()
         
         # Determine URLs based on signature type
