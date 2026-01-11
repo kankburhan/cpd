@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-01-12
+
+### Fixed
+- Relaxed false positive reduction logic: detections with small byte differences (< 50 bytes) are now only discarded if the percentage difference is also < 1% (previously was discarding any < 50 bytes difference).
+- Fixed regression with indentation in verification logic.
+
 ## [0.4.0] - 2026-01-12
 
 ### Added

@@ -504,7 +504,14 @@ class Poisoner:
                          len_verify = len(verify_resp['body'])
                          if len_fresh == len_verify:
                              logger.debug(f"Ignored {signature['name']} - Content length identical to fresh baseline ({len_verify} bytes). Likely benign dynamic content.")
-                             return None
+                             # Only discard if we are strictly checking length variation. 
+                             # If hashes differ (which they do, otherwise we hit line 498), same length might just be a swap.
+                             # However, for stability, we often assume poison changes length.
+                             # Let's be less strict: if same length, only discard if very small body?
+                             # For now, we trust the hash check above. But if we are here, fresh_hash != verify_hash.
+                             # If length is identical, it's suspicious but could be a swapped value (User vs Evil).
+                             # We'll allow it to proceed to the diff check below (which will be 0% diff).
+                             pass 
                          
                          # NEW: Calculate percentage difference, not just absolute
                          if len_fresh > 0:
@@ -512,8 +519,10 @@ class Poisoner:
                          else:
                              diff_percent = 0 if len_verify == 0 else 100
                          
-                         # If difference is < 5% OR < 50 bytes, likely benign
-                         if diff_percent < 5 or abs(len_fresh - len_verify) < 50:
+                          # If difference is < 1% AND < 20 bytes, likely benign noise (timestamps/nonces)
+                         # We use AND because a small byte change on a small page is significant (high %),
+                         # and a large byte change on a large page is significant (even if low %).
+                         if diff_percent < 1.0 and abs(len_fresh - len_verify) < 20: 
                              logger.debug(f"Ignored {signature['name']} - Content length similar "
                                          f"({diff_percent:.1f}% diff, {abs(len_fresh - len_verify)} bytes)")
                              return None
