@@ -10,7 +10,7 @@ def mock_baseline():
         url="https://example.com/foo",
         status=200,
         headers={"Server": "Test"},
-        body_hash="abc",
+        body_hash="02f67ccd1094983cb438874466ce795ddf13ec4989dbd10eebfcf3ab2c8c04ca",
         is_stable=True
     )
 
@@ -32,8 +32,11 @@ async def test_poisoner_payload_generation(poisoner):
     mock_client = AsyncMock()
     # Simulate a cache miss then hit
     mock_client.request.side_effect = [
-        {"status": 200, "headers": {}, "body": b"poisoned", "url": "https://example.com/foo"}, # Malicious request
-        {"status": 200, "headers": {}, "body": b"poisoned", "url": "https://example.com/foo"}  # Clean verification request
+        {"status": 200, "headers": {}, "body": b"poisoned" * 10, "url": "https://example.com/foo"}, # Malicious request
+        {"status": 200, "headers": {}, "body": b"poisoned" * 10, "url": "https://example.com/foo"}, # Clean verification request
+        # Full validation requires Verify 2 and Fresh
+        {"status": 200, "headers": {}, "body": b"poisoned" * 10, "url": "https://example.com/foo"},
+        {"status": 200, "headers": {}, "body": b"Content A", "url": "https://example.com/foo?fresh"}, 
     ]
     
     # Find the path signature

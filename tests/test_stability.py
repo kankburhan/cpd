@@ -15,7 +15,7 @@ def baseline():
         url="http://example.com",
         status=200,
         headers={},
-        body_hash="hash_A", # Mock hash
+        body_hash="02f67ccd1094983cb438874466ce795ddf13ec4989dbd10eebfcf3ab2c8c04ca", # sha256(b"Content A")
         body=b"Content A"
     )
 
@@ -75,9 +75,11 @@ async def test_stable_poisoning_reported(mock_client, baseline):
     # 2. Verify 1 -> Returns B
     # 3. Verify 2 -> Returns B
     mock_client.request.side_effect = [
-        {"status": 200, "headers": {}, "body": b"Content B", "url": "http://example.com"},
-        {"status": 200, "headers": {}, "body": b"Content B", "url": "http://example.com"},
-        {"status": 200, "headers": {}, "body": b"Content B", "url": "http://example.com"}
+        {"status": 200, "headers": {}, "body": b"Content BBB" * 10, "url": "http://example.com"},
+        {"status": 200, "headers": {}, "body": b"Content BBB" * 10, "url": "http://example.com"},
+        {"status": 200, "headers": {}, "body": b"Content BBB" * 10, "url": "http://example.com"},
+        # Fresh baseline check
+        {"status": 200, "headers": {}, "body": b"Content A", "url": "http://example.com?fresh"}
     ]
     
     findings = await poisoner._attempt_poison(mock_client, poisoner.signatures[0])

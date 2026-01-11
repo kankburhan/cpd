@@ -5,23 +5,77 @@ from typing import TextIO
 from cpd.utils.logger import setup_logger, logger
 from cpd.engine import Engine
 
+import os
+import time
+import json
+import requests
+from importlib.metadata import version, PackageNotFoundError
+
 def check_for_updates(quiet=False):
     """
-    Mock check for updates.
+    Check for updates on PyPI with local caching to prevent frequent requests.
     """
-    # In a real scenario, this would query PyPI or GitHub Releases
-    # current_version = "0.1.0"
-    # latest_version = fetch_remote_version()
+    cache_dir = os.path.expanduser("~/.cpd")
+    cache_file = os.path.join(cache_dir, "update_check.json")
     
-    # Mocking a new version being available
-    import random
-    if random.choice([True, False]): # Randomly simulate an update
-        msg = "\n[+] A new version of CPD is available! Run 'cpd update' to get the latest features.\n"
-        if not quiet:
-            click.secho(msg, fg="green", bold=True)
+    # 1. Ensure cache directory exists
+    if not os.path.exists(cache_dir):
+        try:
+            os.makedirs(cache_dir, exist_ok=True)
+        except OSError:
+            return # Fail silently if we can't write
+
+    # 2. Check local cache (debounce 24h)
+    now = time.time()
+    try:
+        if os.path.exists(cache_file):
+            with open(cache_file, 'r') as f:
+                data = json.load(f)
+                last_checked = data.get('last_checked', 0)
+                # If checked within last 24 hours (86400 seconds), skip
+                if now - last_checked < 86400:
+                    return
+    except Exception:
+        pass # Ignore cache read errors
+
+    # 3. Query PyPI
+    try:
+        # Get installed version
+        try:
+            current_version = version("cpd-sec")
+        except PackageNotFoundError:
+            current_version = "0.0.0"
+
+        # Fetch latest from PyPI
+        resp = requests.get("https://pypi.org/pypi/cpd-sec/json", timeout=2)
+        if resp.status_code == 200:
+            info = resp.json()
+            latest_version = info['info']['version']
+            
+            # Simple string comparison or semver? PyPI versions usually sortable.
+            # Use packaging.version if available, or simple check.
+            # Assuming simple check for now:
+            if latest_version != current_version and latest_version > current_version:
+                 msg = f"\n[+] A new version of CPD is available ({latest_version})! Run 'pip install --upgrade cpd-sec' to update.\n"
+                 if not quiet:
+                     click.secho(msg, fg="green", bold=True)
+        
+        # 4. Update Cache
+        with open(cache_file, 'w') as f:
+            json.dump({'last_checked': now, 'latest_seen': latest_version}, f)
+
+    except Exception:
+        # Fail silently on network errors, timeouts, or parse errors
+        pass
+
+def get_version():
+    try:
+        return version("cpd-sec")
+    except PackageNotFoundError:
+        return "unknown"
 
 @click.group()
-@click.version_option(version="0.1.0")
+@click.version_option(version=get_version())
 @click.option('--verbose', '-v', is_flag=True, help="Enable verbose logging.")
 @click.option('--quiet', '-q', is_flag=True, help="Suppress informational output.")
 @click.option('--log-level', '-l', help="Set log level (DEBUG, INFO, WARNING, ERROR, CRITICAL). overrides -v and -q.")
@@ -38,18 +92,35 @@ def cli(verbose, quiet, log_level):
 @cli.command()
 def update():
     """
-    Check for and update to the latest version.
+    Check for updates and show upgrade instructions.
     """
     logger.info("Checking for updates...")
-    # Mock update process
-    import time
-    time.sleep(1)
-    logger.info("Connecting to remote repository...")
-    time.sleep(1)
+    # Force check (bypass cache implicitly by always running check logic? No, check_for_updates uses cache)
+    # So we should probably bypass cache here.
     
-    # Mock result
-    click.secho(f"[+] Downloading release from https://github.com/kankburhan/cpd/releases...", fg="green")
-    click.secho("[+] CPD has been updated to version 0.2.0!", fg="green", bold=True)
+    try:
+        from importlib.metadata import version, PackageNotFoundError
+        try:
+            current = version("cpd-sec")
+        except PackageNotFoundError:
+            current = "unknown"
+            
+        logger.info(f"Current version: {current}")
+        
+        import requests
+        resp = requests.get("https://pypi.org/pypi/cpd-sec/json", timeout=5)
+        if resp.status_code == 200:
+            latest = resp.json()['info']['version']
+            if latest != current and latest > current:
+                click.secho(f"[+] Update available: {latest}", fg="green", bold=True)
+                click.secho("Run the following command to upgrade:", fg="white")
+                click.secho("    pip install --upgrade cpd-sec", fg="cyan", bold=True)
+            else:
+                click.secho(f"[+] You are using the latest version ({current}).", fg="green")
+        else:
+            logger.error("Failed to fetch update info from PyPI.")
+    except Exception as e:
+        logger.error(f"Update check failed: {e}")
 
 
 @cli.command()

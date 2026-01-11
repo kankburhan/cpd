@@ -15,7 +15,7 @@ def baseline():
         url="http://example.com",
         status=200,
         headers={},
-        body_hash="hash_A", # Mock hash
+        body_hash="02f67ccd1094983cb438874466ce795ddf13ec4989dbd10eebfcf3ab2c8c04ca", # sha256(b"Content A")
         body=b"Content A"
     )
 
@@ -112,9 +112,9 @@ async def test_legitimate_poisoning_reported_despite_check(mock_client, baseline
     # 3. Verify 2 -> B (Stability Pass)
     # 4. Fresh Baseline -> A (Drift Check Fails -> Valid Finding)
     mock_client.request.side_effect = [
-        {"status": 200, "headers": {}, "body": b"Content B", "url": "http://example.com?cb=1"},
-        {"status": 200, "headers": {}, "body": b"Content B", "url": "http://example.com?cb=1"},
-        {"status": 200, "headers": {}, "body": b"Content B", "url": "http://example.com?cb=1"},
+        {"status": 200, "headers": {}, "body": b"Content BBB" * 10, "url": "http://example.com?cb=1"},
+        {"status": 200, "headers": {}, "body": b"Content BBB" * 10, "url": "http://example.com?cb=1"},
+        {"status": 200, "headers": {}, "body": b"Content BBB" * 10, "url": "http://example.com?cb=1"},
         {"status": 200, "headers": {}, "body": b"Content A", "url": "http://example.com?cb=fresh"}
     ]
     

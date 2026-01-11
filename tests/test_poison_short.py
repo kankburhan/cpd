@@ -39,6 +39,9 @@ async def test_vercel_short_value_ignored(mock_client, baseline):
     mock_client.request.side_effect = [
         {"status": 200, "headers": {}, "body": body_with_us, "url": "http://example.com/?cb=1"},
         {"status": 200, "headers": {}, "body": body_with_us, "url": "http://example.com/?cb=1"},
+        # Method Override triggers 2 more checks: Verify 2 and Fresh
+        {"status": 200, "headers": {}, "body": body_with_us, "url": "http://example.com/?cb=1"},
+        {"status": 200, "headers": {}, "body": b"Content A", "url": "http://example.com/?cb=fresh"},
     ]
     
     findings = await poisoner.run(mock_client)
