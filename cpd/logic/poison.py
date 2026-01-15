@@ -1,16 +1,31 @@
 import time
 import uuid
 import random
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Tuple
 from cpd.http_client import HttpClient
 from cpd.logic.baseline import Baseline
+from cpd.logic.cache_guard import CacheGuard
 from cpd.utils.logger import logger
 
 class Poisoner:
-    def __init__(self, baseline: Baseline, headers: Dict[str, str] = None):
+    def __init__(
+        self,
+        baseline: Baseline,
+        headers: Dict[str, str] = None,
+        cache_key_allowlist: Optional[List[str]] = None,
+        cache_key_ignore_params: Optional[List[str]] = None,
+        enforce_header_allowlist: bool = True,
+    ):
         self.baseline = baseline
         self.headers = headers or {}
         self.payload_id = str(uuid.uuid4())[:8]
+        self.cache_guard = CacheGuard(
+            baseline,
+            allowlist=cache_key_allowlist,
+            ignored_query_params=cache_key_ignore_params,
+            enforce_allowlist=enforce_header_allowlist,
+        )
+        self.safe_headers = self.cache_guard.filter_headers(self.headers)
         
         # NEW: Adjust testing strategy based on status code
         self.is_404 = baseline.status == 404
@@ -286,6 +301,10 @@ class Poisoner:
         
         import asyncio
         findings = []
+        seed_findings = []
+        canary_finding = await self._canary_check(client)
+        if canary_finding:
+            seed_findings.append(canary_finding)
         for sig in self.signatures:
             # Schedule each signature test as a concurrent task
             findings.append(asyncio.create_task(self._attempt_poison(client, sig)))
@@ -293,7 +312,7 @@ class Poisoner:
         results = await asyncio.gather(*findings)
         
         # Filter None results
-        valid_findings = [r for r in results if r]
+        valid_findings = seed_findings + [r for r in results if r]
         return valid_findings
 
     async def _attempt_poison(self, client: HttpClient, signature: Dict[str, str]) -> Optional[Dict]:
@@ -318,7 +337,8 @@ class Poisoner:
             if any(ext in self.baseline.content_type for ext in ["image/", "video/", "audio/", "font/"]):
                 logger.debug(f"Skipping method override on static content ({self.baseline.content_type})")
                 return None
-        headers = self.headers.copy()
+        headers = self.safe_headers.copy()
+        injected_header = signature.get("header")
         
         # Determine URLs based on signature type
         if signature.get("type") == "path":
@@ -469,9 +489,31 @@ class Poisoner:
                  return None
 
         # 2. Verification Request (Clean URL with same cache key/buster)
-        verify_resp = await client.request("GET", verify_url, headers=self.headers)
+        verify_resp = await client.request("GET", verify_url, headers=self.safe_headers)
         if not verify_resp:
             return
+
+        vary_headers = self.cache_guard.extract_vary_headers(resp.get("headers", {})) or self.cache_guard.baseline_vary
+        cache_key_poison = self.cache_guard.canonical_cache_key_with_ignores(target_url, headers, vary_headers)
+        cache_key_verify = self.cache_guard.canonical_cache_key_with_ignores(verify_url, self.safe_headers, vary_headers)
+        cache_key_raw = self.cache_guard.canonical_cache_key(verify_url, self.safe_headers, vary_headers)
+        cacheable, cacheable_reason = self.cache_guard.is_cacheable(resp, self.baseline.status)
+        cache_hit, cache_hit_evidence = self.cache_guard.cache_hit_signal(verify_resp)
+        vary_mismatch, vary_details = self.cache_guard.vary_inconsistent(
+            self.baseline.headers, resp.get("headers", {}), verify_resp.get("headers", {})
+        )
+        fingerprint_issue = await self.cache_guard.register_fingerprint(cache_key_poison, resp)
+        fingerprint_verify_issue = await self.cache_guard.register_fingerprint(cache_key_verify, verify_resp)
+        unkeyed_header = False
+        if injected_header:
+            unkeyed_header = self.cache_guard.unkeyed_header_used(injected_header, vary_headers)
+        smuggling_risks = self.cache_guard.smuggling_risk(verify_resp.get("headers", {}))
+        shadow_mismatch = False
+        shadow_details: Dict[str, str] = {}
+        if cache_hit:
+            shadow_mismatch, shadow_details = await self._shadow_cache_validation(client, verify_url)
+        if smuggling_risks:
+            logger.warning(f"Potential response smuggling risk indicators: {', '.join(smuggling_risks)}")
 
         if signature.get("type") in ["path", "method_override"]:
             # Calculate verify hash
@@ -479,7 +521,7 @@ class Poisoner:
             verify_hash = hashlib.sha256(verify_resp['body']).hexdigest()
             
             if verify_resp['body'] == resp['body'] and verify_hash != self.baseline.body_hash:
-                 verify_resp_2 = await client.request("GET", verify_url, headers=self.headers)
+                 verify_resp_2 = await client.request("GET", verify_url, headers=self.safe_headers)
                  if not verify_resp_2:
                      return None
                  
@@ -492,7 +534,7 @@ class Poisoner:
                  fresh_cb = f"cb={int(time.time())}_{random.randint(1000,9999)}"
                  fresh_url = f"{self.baseline.url}?{fresh_cb}" if '?' not in self.baseline.url else f"{self.baseline.url}&{fresh_cb}"
                  
-                 fresh_resp = await client.request("GET", fresh_url, headers=self.headers)
+                 fresh_resp = await client.request("GET", fresh_url, headers=self.safe_headers)
                  if fresh_resp:
                      fresh_hash = hashlib.sha256(fresh_resp['body']).hexdigest()
                      if fresh_hash == verify_hash:
@@ -534,16 +576,65 @@ class Poisoner:
                  vuln_type = "PathNormalizationPoisoning" if signature.get("type") == "path" else "MethodOverridePoisoning"
                  msg = f"POTENTIAL VULNERABILITY: {vuln_type}. Clean URL {verify_url} served content from {target_url} (reproducing malicious behavior)"
                  logger.critical(msg)
-                 return {
+                 eviction_attempted = await self._attempt_cache_eviction(client, verify_url)
+                 finding = {
                      "url": self.baseline.url,
                      "target_url": target_url,
                      "verify_url": verify_url,
                      "vulnerability": vuln_type,
                      "details": msg,
                      "signature": signature,
-                     "severity": "HIGH"
+                     "severity": "HIGH",
+                     "cache_key": cache_key_verify,
+                     "cache_key_raw": cache_key_raw,
+                     "cacheable": cacheable,
+                     "cacheable_reason": cacheable_reason,
+                     "cache_hit": cache_hit,
+                     "cache_hit_evidence": cache_hit_evidence,
+                     "vary_headers": sorted(list(vary_headers)),
+                     "vary_inconsistency": vary_details,
+                     "cache_integrity_issue": fingerprint_issue or fingerprint_verify_issue,
+                     "smuggling_risks": smuggling_risks,
+                     "shadow_cache_mismatch": shadow_mismatch,
+                     "shadow_cache_details": shadow_details,
+                     "cache_eviction_attempted": eviction_attempted
                  }
+                 self._log_security_event(finding)
+                 return finding
             return None
+
+        if cache_key_poison == cache_key_verify and resp['body'] != verify_resp['body']:
+            details = (
+                f"Unkeyed input affected response for cache key {cache_key_verify}. "
+                f"Injected header={injected_header or 'n/a'} was not part of cache key."
+            )
+            logger.critical(details)
+            eviction_attempted = await self._attempt_cache_eviction(client, verify_url)
+            finding = {
+                "url": self.baseline.url,
+                "target_url": target_url,
+                "verify_url": verify_url,
+                "vulnerability": "UnkeyedInputCachePoisoning",
+                "details": details,
+                "signature": signature,
+                "severity": "HIGH" if cacheable else "MEDIUM",
+                "cache_key": cache_key_verify,
+                "cache_key_raw": cache_key_raw,
+                "cacheable": cacheable,
+                "cacheable_reason": cacheable_reason,
+                "cache_hit": cache_hit,
+                "cache_hit_evidence": cache_hit_evidence,
+                "vary_headers": sorted(list(vary_headers)),
+                "vary_inconsistency": vary_details,
+                "cache_integrity_issue": fingerprint_issue or fingerprint_verify_issue,
+                "unkeyed_header": unkeyed_header,
+                "smuggling_risks": smuggling_risks,
+                "shadow_cache_mismatch": shadow_mismatch,
+                "shadow_cache_details": shadow_details,
+                "cache_eviction_attempted": eviction_attempted
+            }
+            self._log_security_event(finding)
+            return finding
 
         if signature['value'] in str(verify_resp['headers']) or signature['value'] in str(verify_resp['body']):
              # Ignore short values (DoS/False Positive prevention)
@@ -565,14 +656,119 @@ class Poisoner:
              elif signature.get("type") in ["fat_get", "query_param"]:
                   severity = "HIGH"
 
-             return {
+             eviction_attempted = await self._attempt_cache_eviction(client, verify_url)
+             finding = {
                  "url": self.baseline.url,
                  "target_url": target_url,
                  "vulnerability": "CachePoisoning",
                  "details": msg,
                  "signature": signature,
-                 "severity": severity
+                 "severity": severity,
+                 "cache_key": cache_key_verify,
+                 "cache_key_raw": cache_key_raw,
+                 "cacheable": cacheable,
+                 "cacheable_reason": cacheable_reason,
+                 "cache_hit": cache_hit,
+                 "cache_hit_evidence": cache_hit_evidence,
+                 "vary_headers": sorted(list(vary_headers)),
+                 "vary_inconsistency": vary_details,
+                 "cache_integrity_issue": fingerprint_issue or fingerprint_verify_issue,
+                 "unkeyed_header": unkeyed_header,
+                 "smuggling_risks": smuggling_risks,
+                 "shadow_cache_mismatch": shadow_mismatch,
+                 "shadow_cache_details": shadow_details,
+                 "cache_eviction_attempted": eviction_attempted
              }
+             self._log_security_event(finding)
+             return finding
         else:
              logger.debug(f"Failed {signature['name']}")
              return None
+
+    async def _attempt_cache_eviction(self, client: HttpClient, url: str) -> bool:
+        eviction_headers = {
+            "Cache-Control": "no-cache, max-age=0",
+            "Pragma": "no-cache",
+        }
+        try:
+            resp = await client.request("GET", url, headers={**self.safe_headers, **eviction_headers})
+            return bool(resp)
+        except Exception as exc:
+            logger.debug(f"Cache eviction attempt failed: {exc}")
+            return False
+
+    async def _shadow_cache_validation(self, client: HttpClient, url: str) -> Tuple[bool, Dict[str, str]]:
+        shadow_headers = {
+            **self.safe_headers,
+            "Cache-Control": "no-cache, max-age=0",
+            "Pragma": "no-cache",
+        }
+        cached_resp = await client.request("GET", url, headers=self.safe_headers)
+        if not cached_resp:
+            return False, {}
+        origin_resp = await client.request("GET", url, headers=shadow_headers)
+        if not origin_resp:
+            return False, {}
+        cached_hash = cached_resp.get("body", b"")
+        origin_hash = origin_resp.get("body", b"")
+        if cached_hash != origin_hash:
+            return True, {
+                "cached_status": str(cached_resp.get("status")),
+                "origin_status": str(origin_resp.get("status")),
+                "cached_length": str(len(cached_hash)),
+                "origin_length": str(len(origin_hash)),
+            }
+        return False, {}
+
+    async def _canary_check(self, client: HttpClient) -> Optional[Dict]:
+        canary_id = f"canary-{self.payload_id}"
+        cache_buster = f"cb={int(time.time())}_{random.randint(1000,9999)}"
+        canary_param = f"__cpd_canary={canary_id}"
+        canary_url = (
+            f"{self.baseline.url}?{cache_buster}&{canary_param}"
+            if "?" not in self.baseline.url
+            else f"{self.baseline.url}&{cache_buster}&{canary_param}"
+        )
+        verify_url = f"{self.baseline.url}?{cache_buster}" if '?' not in self.baseline.url else f"{self.baseline.url}&{cache_buster}"
+        canary_headers = {**self.safe_headers, "X-CPD-Canary": canary_id}
+        canary_resp = await client.request("GET", canary_url, headers=canary_headers)
+        if not canary_resp:
+            return None
+        verify_resp = await client.request("GET", verify_url, headers=self.safe_headers)
+        if not verify_resp:
+            return None
+        vary_headers = self.cache_guard.extract_vary_headers(canary_resp.get("headers", {})) or self.cache_guard.baseline_vary
+        canary_key = self.cache_guard.canonical_cache_key_with_ignores(canary_url, canary_headers, vary_headers)
+        verify_key = self.cache_guard.canonical_cache_key_with_ignores(verify_url, self.safe_headers, vary_headers)
+        if canary_key == verify_key and canary_id in str(verify_resp.get("body", b"")):
+            details = f"Canary response leaked into clean cache key {verify_key}"
+            logger.critical(details)
+            finding = {
+                "url": self.baseline.url,
+                "target_url": canary_url,
+                "verify_url": verify_url,
+                "vulnerability": "CanaryCachePoisoning",
+                "details": details,
+                "signature": {"name": "Canary-Check", "param": "__cpd_canary", "value": canary_id},
+                "severity": "HIGH",
+                "cache_key": verify_key,
+                "cache_hit": True,
+            }
+            self._log_security_event(finding)
+            return finding
+        return None
+
+    def _log_security_event(self, finding: Dict[str, str]) -> None:
+        summary = {
+            "vulnerability": finding.get("vulnerability"),
+            "url": finding.get("url"),
+            "target_url": finding.get("target_url"),
+            "severity": finding.get("severity"),
+            "cache_key": finding.get("cache_key"),
+            "cache_hit": finding.get("cache_hit"),
+            "cache_hit_evidence": finding.get("cache_hit_evidence"),
+            "vary_headers": finding.get("vary_headers"),
+            "unkeyed_header": finding.get("unkeyed_header"),
+            "cache_integrity_issue": finding.get("cache_integrity_issue"),
+        }
+        logger.warning(f"Security event: {summary}")

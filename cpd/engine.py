@@ -1,21 +1,43 @@
 import asyncio
-from typing import List, Dict
+from typing import List, Dict, Iterable
 from cpd.http_client import HttpClient
 from cpd.utils.logger import logger
 
 class Engine:
-    def __init__(self, concurrency: int = 50, timeout: int = 10, headers: Dict[str, str] = None, skip_unstable: bool = True, rate_limit: int = 0):
+    def __init__(
+        self,
+        concurrency: int = 50,
+        timeout: int = 10,
+        headers: Dict[str, str] = None,
+        skip_unstable: bool = True,
+        rate_limit: int = 0,
+        cache_key_allowlist: Iterable[str] = None,
+        cache_key_ignore_params: Iterable[str] = None,
+        enforce_header_allowlist: bool = True,
+    ):
         self.concurrency = concurrency
         self.timeout = timeout
         self.headers = headers or {}
         self.skip_unstable = skip_unstable
         self.rate_limit = rate_limit
+        self.cache_key_allowlist = [h.lower() for h in (cache_key_allowlist or [])]
+        self.cache_key_ignore_params = list(cache_key_ignore_params or [])
+        self.enforce_header_allowlist = enforce_header_allowlist
         self.stats = {
             'total_urls': 0,
             'skipped_status': 0,
             'skipped_unstable': 0,
             'tested': 0,
             'findings': 0
+        }
+
+    def _filter_headers(self, headers: Dict[str, str]) -> Dict[str, str]:
+        if not self.enforce_header_allowlist or not self.cache_key_allowlist:
+            return headers.copy()
+        return {
+            key: value
+            for key, value in headers.items()
+            if key.lower() in self.cache_key_allowlist
         }
 
     async def run(self, urls: List[str]):
@@ -82,7 +104,8 @@ class Engine:
              logger.warning(f"Target {url} does not appear to be using a cache ({reason}). Findings might be invalid.")
             
         # 1. Baseline Analysis
-        analyzer = BaselineAnalyzer(headers=self.headers)
+        safe_headers = self._filter_headers(self.headers)
+        analyzer = BaselineAnalyzer(headers=safe_headers)
         baseline = await analyzer.analyze(client, url)
         
         if not baseline:
@@ -104,7 +127,13 @@ class Engine:
         # 2. Poisoning Simulation
         self.stats['tested'] += 1
         from cpd.logic.poison import Poisoner
-        poisoner = Poisoner(baseline, headers=self.headers)
+        poisoner = Poisoner(
+            baseline,
+            headers=self.headers,
+            cache_key_allowlist=self.cache_key_allowlist,
+            cache_key_ignore_params=self.cache_key_ignore_params,
+            enforce_header_allowlist=self.enforce_header_allowlist,
+        )
         findings = await poisoner.run(client)
         if findings:
             self.stats['findings'] += len(findings)

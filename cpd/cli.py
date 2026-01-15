@@ -210,7 +210,15 @@ def scan(url, file, request_file, raw, concurrency, header, output, skip_unstabl
 
     logger.info(f"Starting scan for {len(urls)} URLs with concurrency {concurrency}")
     
-    engine = Engine(concurrency=concurrency, headers=custom_headers, skip_unstable=skip_unstable, rate_limit=rate_limit)
+    engine = Engine(
+        concurrency=concurrency,
+        headers=custom_headers,
+        skip_unstable=skip_unstable,
+        rate_limit=rate_limit,
+        cache_key_allowlist=cfg.get("cache_key_allowlist", DEFAULT_CONFIG["cache_key_allowlist"]),
+        cache_key_ignore_params=cfg.get("cache_key_ignore_params", DEFAULT_CONFIG["cache_key_ignore_params"]),
+        enforce_header_allowlist=cfg.get("enforce_header_allowlist", DEFAULT_CONFIG["enforce_header_allowlist"]),
+    )
     findings = asyncio.run(engine.run(urls))
     
     if findings:
