@@ -8,7 +8,27 @@ DEFAULT_CONFIG = {
     "headers": {},
     "skip_unstable": True,
     "rate_limit": 0,
-    "log_level": "INFO"
+    "log_level": "INFO",
+    "cache_key_allowlist": [
+        "accept",
+        "accept-encoding",
+        "accept-language",
+        "authorization",
+        "cookie",
+        "user-agent",
+        "x-api-key",
+        "x-tenant-id",
+    ],
+    "cache_key_ignore_params": [
+        "utm_*",
+        "gclid",
+        "fbclid",
+        "mc_cid",
+        "mc_eid",
+        "ref",
+        "ref_src",
+    ],
+    "enforce_header_allowlist": True
 }
 
 def load_config(path: str) -> Dict[str, Any]:
