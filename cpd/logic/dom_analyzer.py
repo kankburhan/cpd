@@ -11,7 +11,7 @@ class DomAnalyzer:
     def __init__(self):
         # Regex patterns for common injection points
         self.patterns = {
-            "script_tag": re.compile(r'<script[^>]*>(.*?)</script>', re.DOTALL | re.IGNORECASE),
+            "script_tag": re.compile(r'<script\b[^>]*>(.*?)</script\b[^>]*>', re.DOTALL | re.IGNORECASE),
             "meta_tag": re.compile(r'<meta[^>]*>', re.IGNORECASE),
             "json_object": re.compile(r'\{.*\}', re.DOTALL), # Simple heuristic for JSON blobs
             "nextjs_data": re.compile(r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', re.DOTALL),
