@@ -28,7 +28,7 @@ class CacheValidator:
             "X-Proxy-Cache-Status",  # Squid
         ]
 
-    async def analyze(self, client: HttpClient, url: str) -> Tuple[bool, Optional[str]]:
+    async def analyze(self, client: HttpClient, url: str, headers: Dict[str, str] = None) -> Tuple[bool, Optional[str]]:
         """
         Analyze if the target URL is using a cache.
         Returns: (is_cached, reason)
@@ -36,7 +36,7 @@ class CacheValidator:
         logger.info(f"Checking for cache indicators on {url}")
         
         # 1. Passive Header Check
-        resp = await client.request("GET", url)
+        resp = await client.request("GET", url, headers=headers)
         if not resp:
             return False, "Failed to fetch URL"
 

@@ -28,10 +28,12 @@ class Poisoner:
         cache_key_allowlist: Optional[List[str]] = None,
         cache_key_ignore_params: Optional[List[str]] = None,
         enforce_header_allowlist: bool = True,
+        value_mutator: Optional[callable] = None,
     ):
         self.baseline = baseline
         self.headers = headers or {}
         self.payload_id = str(uuid.uuid4())[:8]
+        self.value_mutator = value_mutator
         
         # Helpers
         self.cache_guard = CacheGuard(
@@ -308,6 +310,37 @@ class Poisoner:
             headers[signature['header']] = signature['value']
 
         # --- 2. Poison Attempt ---
+        # Apply WAF bypass mutation if configured
+        val_to_use = signature.get("value", "")
+        if self.value_mutator and val_to_use:
+             # Only mutate if it looks like a payload we want to hide? 
+             # Or just everything? For WAF bypass of "poison-uuid", maybe not needed?
+             # But if signature is complex, yes.
+             # Note: signature["value"] is usually the injection key.
+             # We try mutating it.
+             try:
+                 # We assume mutator returns a single string (best bypass)
+                 # But WAFBypassEngine returns lists. Engine should pass a wrapper that picks one.
+                 val_to_use = self.value_mutator(val_to_use)
+             except Exception:
+                 pass
+        
+        # update headers/body with mutated value
+        if signature.get("type") == "path":
+             # Re-evaluate path with mutated value if needed?
+             # Path mutation logic above used signature['value'] directly.
+             # We might need to re-apply mutation to path logic... 
+             # This is getting complex because path logic constructs mal_path string.
+             # Let's simplify: only apply to header/body injections for now.
+             pass
+
+        elif signature.get("type") == "fat_get":
+             headers[signature["header"]] = val_to_use
+             # body callback? 
+        
+        elif signature.get("type") not in ["path", "query_param", "http2_header"]:
+            headers[signature['header']] = val_to_use
+
         resp = await client.request("GET", target_url, headers=headers, data=body)
         if not resp:
             return None

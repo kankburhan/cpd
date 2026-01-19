@@ -14,6 +14,8 @@ class Engine:
         cache_key_allowlist: Iterable[str] = None,
         cache_key_ignore_params: Iterable[str] = None,
         enforce_header_allowlist: bool = True,
+        enable_waf_bypass: bool = True,
+        waf_max_attempts: int = 50,
     ):
         self.concurrency = concurrency
         self.timeout = timeout
@@ -23,6 +25,8 @@ class Engine:
         self.cache_key_allowlist = [h.lower() for h in (cache_key_allowlist or [])]
         self.cache_key_ignore_params = list(cache_key_ignore_params or [])
         self.enforce_header_allowlist = enforce_header_allowlist
+        self.enable_waf_bypass = enable_waf_bypass
+        self.waf_max_attempts = waf_max_attempts
         self.stats = {
             'total_urls': 0,
             'skipped_status': 0,
@@ -89,14 +93,51 @@ class Engine:
     async def _process_url(self, client: HttpClient, url: str):
         from cpd.logic.baseline import BaselineAnalyzer
         
+        # WAF Bypass Context
+        local_headers = self.headers.copy()
+        bypass_mutator = None
         
+        if self.enable_waf_bypass:
+            from cpd.logic.waf_bypass import WAFBypassEngine
+            waf_engine = WAFBypassEngine()
+            
+            # Detect
+            waf_name, confidence = await waf_engine.detector.detect(client, url)
+            if waf_name:
+                logger.warning(f"WAF Detected on {url}: {waf_name} ({confidence}%)")
+                
+                # Bypass
+                success, bypasses = await waf_engine.analyze_and_bypass(client, url, "<script>alert(1)</script>", local_headers)
+                if success and bypasses:
+                    # Pick best bypass (simple strategy: first one for now)
+                    best_bypass = bypasses[0]
+                    logger.info(f"Using WAF bypass technique: {best_bypass['technique']}")
+                    
+                    # Merge headers
+                    if best_bypass.get('headers'):
+                        local_headers.update(best_bypass['headers'])
+                        
+                    # Create mutator
+                    # We need a way to map technique name back to a functional mutator or use the one from engine?
+                    # The bypass object has 'technique' name. WAFBypassEngine has methods _technique_*.
+                    # Let's verify how we can get the method. 
+                    # Simpler: The engine returns the payload, but Poisoner needs to apply it to arbitrary strings.
+                    # We should probably expose the technique function or recreate it.
+                    # Let's map technique name to a method on waf_engine.
+                    technique_name = best_bypass['technique']
+                    method_name = f"_technique_{technique_name}"
+                    if hasattr(waf_engine, method_name):
+                         # Create a wrapper that takes a string and returns the first result of the technique
+                         technique_func = getattr(waf_engine, method_name)
+                         bypass_mutator = lambda s: technique_func(s)[0] if technique_func(s) else s
+
         # No semaphore needed, worker count limits concurrency
         logger.info(f"Processing {url}")
         
         # 0. Cache Validation
         from cpd.logic.validator import CacheValidator
         validator = CacheValidator()
-        is_cached, reason = await validator.analyze(client, url)
+        is_cached, reason = await validator.analyze(client, url, headers=local_headers)
         
         if is_cached:
             logger.info(f"Cache detected on {url}: {reason}")
@@ -104,7 +145,7 @@ class Engine:
              logger.warning(f"Target {url} does not appear to be using a cache ({reason}). Findings might be invalid.")
             
         # 1. Baseline Analysis
-        safe_headers = self._filter_headers(self.headers)
+        safe_headers = self._filter_headers(local_headers)
         analyzer = BaselineAnalyzer(headers=safe_headers)
         baseline = await analyzer.analyze(client, url)
         
@@ -129,10 +170,11 @@ class Engine:
         from cpd.logic.poison import Poisoner
         poisoner = Poisoner(
             baseline,
-            headers=self.headers,
+            headers=local_headers,
             cache_key_allowlist=self.cache_key_allowlist,
             cache_key_ignore_params=self.cache_key_ignore_params,
             enforce_header_allowlist=self.enforce_header_allowlist,
+            value_mutator=bypass_mutator,
         )
         findings = await poisoner.run(client)
         if findings:

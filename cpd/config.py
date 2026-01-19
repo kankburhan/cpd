@@ -9,6 +9,9 @@ DEFAULT_CONFIG = {
     "skip_unstable": True,
     "rate_limit": 0,
     "log_level": "INFO",
+    "enable_waf_bypass": True,
+    "waf_max_attempts": 50,
+    "waf_rate_limit": 0.5,
     "cache_key_allowlist": [
         "accept",
         "accept-encoding",
