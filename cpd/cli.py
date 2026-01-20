@@ -131,12 +131,13 @@ def update():
 @click.option('--concurrency', '-c', type=int, default=None, help="Max concurrent requests.")
 @click.option('--header', '-h', multiple=True, help="Custom header (e.g. 'Cookie: foo=bar'). Can be used multiple times.")
 @click.option('--output', '-o', help="File to save JSON results to.")
+@click.option('--open', 'open_browser', is_flag=True, help="Auto-open HTML report in browser (only works with .html output).")
 @click.option('--skip-unstable/--no-skip-unstable', default=None, help="Skip URLs with unstable baselines (default: skip)")
 @click.option('--rate-limit', type=int, default=None, help="Rate limit in requests per second (0 for no limit).")
 @click.option('--config', help="Path to YAML configuration file.")
 @click.option('--no-waf-bypass', is_flag=True, help="Disable automatic WAF bypass.")
 @click.pass_context
-def scan(ctx, url, file, request_file, raw, concurrency, header, output, skip_unstable, rate_limit, config, no_waf_bypass):
+def scan(ctx, url, file, request_file, raw, concurrency, header, output, open_browser, skip_unstable, rate_limit, config, no_waf_bypass):
     """
     Scan one or more URLs for cache poisoning vulnerabilities.
     """
@@ -240,10 +241,19 @@ def scan(ctx, url, file, request_file, raw, concurrency, header, output, skip_un
                 if output.endswith('.html'):
                     from cpd.utils.reporter import Reporter
                     Reporter.generate_html_report(findings, output)
+                    logger.info(f"HTML report saved to {output}")
+                    
+                    # Auto-open in browser if --open flag is set
+                    if open_browser:
+                        import webbrowser
+                        import os
+                        abs_path = os.path.abspath(output)
+                        webbrowser.open(f'file://{abs_path}')
+                        logger.info(f"Opening report in browser: {abs_path}")
                 else:
                     with open(output, 'w') as f:
                         json.dump(findings, f, indent=2)
-                logger.info(f"Results saved to {output}")
+                    logger.info(f"Results saved to {output}")
             except IOError as e:
                 logger.error(f"Failed to write results to {output}: {e}")
     else:

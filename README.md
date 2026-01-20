@@ -95,11 +95,30 @@ cpd-sec scan -u https://admin.example.com \
 ```
 
 #### Output to File (`--output`)
-Save the findings to a JSON file.
+Save the findings to a JSON or HTML file.
 
+**JSON Output:**
 ```bash
 cpd-sec scan -u https://example.com --output results.json
 ```
+
+**HTML Report (NEW!):**
+Generate a professional HTML security report with PoC details:
+```bash
+cpd-sec scan -u https://example.com --output report.html
+```
+
+**Auto-Open Report (`--open`):**
+Automatically open the HTML report in your browser:
+```bash
+cpd-sec scan -u https://example.com --output report.html --open
+```
+
+HTML reports include:
+- 🔬 Evidence section with cache headers and variant URLs
+- 🎯 Proof-of-Concept URLs ready for manual verification
+- 📋 Copy-paste curl commands with malicious headers
+- ⚠️ Reflected content sections showing where payloads appear
 
 #### Concurrency (`--concurrency`)
 Control the number of simultaneous requests (default: 50).
@@ -136,12 +155,15 @@ cpd-sec update
 - **Auto Update Check**: Automatically checks for new versions on run. ![Auto Update](https://img.shields.io/badge/Auto%20Update-Enabled-brightgreen)
 - **High Concurrency**: Built with `asyncio` and `aiohttp` for speed.
 - **Smart Baseline**: Establishes a stable baseline to reduce false positives.
-- **Advanced Poisoning**:
+- **HTML Security Reports**: Professional reports with PoC URLs, curl commands, and evidence details.
+- **Advanced Poisoning Detection**:
     - **Header Injection**: `X-Forwarded-Host`, `X-Forwarded-Scheme`, `Fastly-Client-IP`, etc.
     - **Path Normalization**: Exploits backend URL decoding differences (`/foo\bar`).
+    - **Query Parameter Normalization**: Detects case-insensitive query param cache keys.
     - **Fat GET**: Sends request bodies with GET requests.
     - **Unkeyed Query Params**: Injects parameters to test cache key inclusion.
     - **Method Override**: Tests `X-HTTP-Method-Override`.
+    - **Cache Key Confusion**: Tests URL encoding variants and cache key calculation.
 - **Pipeline Ready**: Designed to integrate into your reconnaissance workflow.
 
 ## Contributing
@@ -164,3 +186,22 @@ If you encounter a false positive (a reported vulnerability that is benign), ple
 5.  **Add/Modify Signatures** in `cpd/logic/poison.py`.
 6.  **Add Tests** in `tests/` to verify your changes.
 7.  **Submit a Pull Request**!
+
+## Support & Donations
+
+If CPD-SEC helped you find vulnerabilities and improve security, consider supporting its development!
+
+**💳 PayPal:**  
+[paypal.me/kankburhan](https://www.paypal.com/paypalme/kankburhan)
+
+**💰 Crypto (USDC):**  
+```
+0x4618393bf4ddc50eb3e75df849b46aca0d0f8e3c
+```
+
+Your support helps maintain and improve this open-source security tool. Thank you! 🙏
+
+## License
+
+MIT License - see LICENSE file for details.
+

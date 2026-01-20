@@ -1,38 +1,87 @@
 from typing import Dict, List, Optional
-from urllib.parse import urlparse
+from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
 from cpd.http_client import HttpClient
 from cpd.logic.cache_guard import CacheGuard
 
 class NormalizationTester:
-    """Test cache key calculation inconsistencies via path normalization."""
+    """Test cache key calculation inconsistencies via path and query parameter normalization."""
+    
+    def _generate_query_param_variants(self, url: str) -> List[str]:
+        """Generate URL variants with query parameter case normalization."""
+        parsed = urlparse(url)
+        
+        if not parsed.query:
+            return []  # No query params to normalize
+        
+        variants = []
+        
+        # Parse query parameters
+        params = parse_qs(parsed.query, keep_blank_values=True)
+        
+        # Only generate variants if we have query parameters
+        if not params:
+            return []
+        
+        # Variant 1: All parameter names UPPERCASE
+        upper_params = {k.upper(): v for k, v in params.items()}
+        upper_query = urlencode(upper_params, doseq=True)
+        upper_url = urlunparse((
+            parsed.scheme, parsed.netloc, parsed.path,
+            parsed.params, upper_query, parsed.fragment
+        ))
+        variants.append(upper_url)
+        
+        # Variant 2: All parameter names lowercase
+        lower_params = {k.lower(): v for k, v in params.items()}
+        lower_query = urlencode(lower_params, doseq=True)
+        lower_url = urlunparse((
+            parsed.scheme, parsed.netloc, parsed.path,
+            parsed.params, lower_query, parsed.fragment
+        ))
+        variants.append(lower_url)
+        
+        # Variant 3: Mixed case (alternating)
+        mixed_params = {}
+        for i, (k, v) in enumerate(params.items()):
+            # Alternate between upper and lower
+            mixed_params[k.upper() if i % 2 == 0 else k.lower()] = v
+        mixed_query = urlencode(mixed_params, doseq=True)
+        mixed_url = urlunparse((
+            parsed.scheme, parsed.netloc, parsed.path,
+            parsed.params, mixed_query, parsed.fragment
+        ))
+        variants.append(mixed_url)
+        
+        return variants
     
     def generate_encoding_variants(self, url: str) -> List[str]:
         """Generate URL variants with different encodings of characters."""
         parsed = urlparse(url)
         path = parsed.path
-        if not path or path == "/":
-            return [] # Can't normalize root much
-        
-        # Base variants of the path
-        # 1. Encoded characters
         variants = []
         
-        # Slashes
-        if '/' in path:
-            variants.append(url.replace('/', '%2F'))
-            variants.append(url.replace('/', '%252F')) # Double encoded
-            # variants.append(url.replace('/', '\u2044')) # Unicode fraction slash - risky for python client?
+        # Path-based variants (existing logic)
+        if path and path != "/":
+            # Slashes
+            if '/' in path:
+                variants.append(url.replace('/', '%2F'))
+                variants.append(url.replace('/', '%252F')) # Double encoded
+                # variants.append(url.replace('/', '\u2044')) # Unicode fraction slash - risky for python client?
+            
+            # Dots
+            if '.' in path:
+                 variants.append(url.replace('.', '%2E'))
+            
+            # Case mismatch (path)
+            variants.append(url.upper())
+            
+            # Matrix params (semicolon)
+            if not ';' in path:
+                variants.append(f"{parsed.scheme}://{parsed.netloc}{path};param=1?{parsed.query}")
         
-        # Dots
-        if '.' in path:
-             variants.append(url.replace('.', '%2E'))
-        
-        # Case mismatch
-        variants.append(url.upper())
-        
-        # Matrix params (semicolon)
-        if not ';' in path:
-            variants.append(f"{parsed.scheme}://{parsed.netloc}{path};param=1?{parsed.query}")
+        # Query parameter variants (NEW)
+        query_variants = self._generate_query_param_variants(url)
+        variants.extend(query_variants)
 
         return variants
     
