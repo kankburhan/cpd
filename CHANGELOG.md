@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-01-20
+
+### Added
+- Severity filtering in HTML reports.
+
+### Removed
+- Debug scripts (`debug_stability.py`, `verify_bypass.py`).
+
+## [0.7.0] - 2026-01-20
+
+### Added
+- Enhanced HTML reports with evidence URLs and PoC details.
+- Query parameter case normalization detection.
+- Auto-open HTML reports in browser (`--open` flag).
+- Donation section in reports and GitHub funding.
+
 ## [0.4.1] - 2026-01-12
 
 ### Fixed

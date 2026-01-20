@@ -40,6 +40,10 @@ class Reporter:
                 .low {{ background: #28a745; }}
                 .count {{ font-size: 32px; font-weight: bold; display: block; }}
                 .label {{ font-size: 14px; opacity: 0.9; }}
+                .card {{ cursor: pointer; transition: all 0.2s ease; }}
+                .card:hover {{ transform: translateY(-5px); box-shadow: 0 5px 15px rgba(0,0,0,0.2); }}
+                .card.active {{ transform: scale(1.02); ring: 2px solid white; }}
+                .hidden {{ display: none !important; }}
                 
                 .finding {{ border: 1px solid #e1e4e8; border-radius: 6px; margin-bottom: 20px; overflow: hidden; }}
                 .finding-header {{ padding: 15px 20px; background: #f8f9fa; border-bottom: 1px solid #e1e4e8; display: flex; justify-content: space-between; align-items: center; }}
@@ -93,19 +97,19 @@ class Reporter:
                 </header>
                 
                 <div class="summary">
-                    <div class="card critical">
+                    <div class="card critical" onclick="filterFindings('CRITICAL')">
                         <span class="count">{severity_counts["CRITICAL"]}</span>
                         <span class="label">Critical</span>
                     </div>
-                    <div class="card high">
+                    <div class="card high" onclick="filterFindings('HIGH')">
                         <span class="count">{severity_counts["HIGH"]}</span>
                         <span class="label">High</span>
                     </div>
-                    <div class="card medium">
+                    <div class="card medium" onclick="filterFindings('MEDIUM')">
                         <span class="count">{severity_counts["MEDIUM"]}</span>
                         <span class="label">Medium</span>
                     </div>
-                    <div class="card low">
+                    <div class="card low" onclick="filterFindings('LOW')">
                         <span class="count">{severity_counts["LOW"]}</span>
                         <span class="label">Low</span>
                     </div>
@@ -149,6 +153,39 @@ class Reporter:
                     navigator.clipboard.writeText(text).then(() => {
                         alert('Copied to clipboard!');
                     });
+                }
+
+                function filterFindings(severity) {
+                    const cards = document.querySelectorAll('.card');
+                    const findings = document.querySelectorAll('.finding');
+                    
+                    // Toggle active state on cards
+                    cards.forEach(card => {
+                        if (card.classList.contains(severity.toLowerCase())) {
+                            card.classList.toggle('active');
+                            // If we're turning off the active state, we want to show all
+                            if (!card.classList.contains('active')) {
+                                severity = 'ALL';
+                            }
+                        } else {
+                            card.classList.remove('active');
+                        }
+                    });
+
+                    // Filter findings
+                    findings.forEach(finding => {
+                        const badge = finding.querySelector('.badge');
+                        if (severity === 'ALL' || badge.classList.contains(severity)) {
+                            finding.classList.remove('hidden');
+                        } else {
+                            finding.classList.add('hidden');
+                        }
+                    });
+
+                    // Update header text based on visible count
+                    const visibleCount = document.querySelectorAll('.finding:not(.hidden)').length;
+                    const headerText = document.querySelector('h2');
+                    headerText.textContent = `Vulnerabilities (${visibleCount})`;
                 }
             </script>
         </body>
