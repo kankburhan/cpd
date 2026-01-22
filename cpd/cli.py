@@ -124,6 +124,62 @@ def update():
 
 
 @cli.command()
+@click.option('--list', '-l', 'list_sessions', is_flag=True, help="List all saved sessions.")
+@click.option('--delete', '-d', 'delete_session', help="Delete a session by ID.")
+@click.option('--clear-all', is_flag=True, help="Delete all saved sessions.")
+def sessions(list_sessions, delete_session, clear_all):
+    """
+    Manage scan sessions for pause/resume functionality.
+    """
+    from cpd.utils.session import SessionManager
+    import time
+    
+    if clear_all:
+        all_sessions = SessionManager.list_sessions()
+        for s in all_sessions:
+            SessionManager.delete_session(s['session_id'])
+        click.secho(f"Deleted {len(all_sessions)} sessions.", fg="green")
+        return
+    
+    if delete_session:
+        if SessionManager.delete_session(delete_session):
+            click.secho(f"Deleted session: {delete_session}", fg="green")
+        else:
+            click.secho(f"Session not found: {delete_session}", fg="red")
+        return
+    
+    # Default: list sessions
+    all_sessions = SessionManager.list_sessions()
+    
+    if not all_sessions:
+        click.secho("No saved sessions found.", fg="yellow")
+        click.echo("Sessions are created automatically when you run 'cpd scan' and pause with Ctrl+C.")
+        return
+    
+    click.secho(f"\n{'='*70}", fg="white")
+    click.secho("  Saved Scan Sessions", fg="cyan", bold=True)
+    click.secho(f"{'='*70}\n", fg="white")
+    
+    for s in all_sessions:
+        total = s['pending'] + s['completed']
+        progress = (s['completed'] / total * 100) if total > 0 else 0
+        
+        # Format timestamp
+        updated = time.strftime('%Y-%m-%d %H:%M', time.localtime(s.get('updated_at', 0)))
+        
+        status = "⏸️  PAUSED" if s.get('paused') else "📋 SAVED"
+        
+        click.echo(f"  {status}  {s['session_id']}")
+        click.echo(f"         Progress: {s['completed']}/{total} ({progress:.1f}%)")
+        click.echo(f"         Findings: {s['findings']}")
+        click.echo(f"         Updated:  {updated}")
+        click.echo(f"         Resume:   cpd scan --resume {s['session_id']}")
+        click.echo("")
+    
+    click.secho(f"{'='*70}\n", fg="white")
+
+
+@cli.command()
 @click.option('--url', '-u', help="Single URL to scan.")
 @click.option('--file', '-f', type=click.File('r'), help="File containing URLs to scan.")
 @click.option('--request-file', '-r', '-burp', type=click.File('r'), help="File containing raw HTTP request (Burp format).")
@@ -136,13 +192,17 @@ def update():
 @click.option('--rate-limit', type=int, default=None, help="Rate limit in requests per second (0 for no limit).")
 @click.option('--config', help="Path to YAML configuration file.")
 @click.option('--no-waf-bypass', is_flag=True, help="Disable automatic WAF bypass.")
+@click.option('--resume', 'resume_session', help="Resume a paused scan session by ID.")
 @click.pass_context
-def scan(ctx, url, file, request_file, raw, concurrency, header, output, open_browser, skip_unstable, rate_limit, config, no_waf_bypass):
+def scan(ctx, url, file, request_file, raw, concurrency, header, output, open_browser, skip_unstable, rate_limit, config, no_waf_bypass, resume_session):
     """
     Scan one or more URLs for cache poisoning vulnerabilities.
+    
+    Use Ctrl+C to pause the scan. Resume with --resume <session_id>.
     """
     from cpd.utils.parser import parse_raw_request
     from cpd.config import load_config, DEFAULT_CONFIG
+    from cpd.utils.session import SessionManager
 
     # 1. Load Configuration
     # Prioritize: CLI > Config File > Defaults
@@ -178,45 +238,75 @@ def scan(ctx, url, file, request_file, raw, concurrency, header, output, open_br
     custom_headers = config_headers.copy()
     custom_headers.update(cli_headers)
 
-    urls = []
-    if url:
-        urls.append(url)
-    
-    if file:
-        for line in file:
-            line = line.strip()
-            if line:
-                urls.append(line)
-    
-    # Check for stdin
-    if not url and not file and not sys.stdin.isatty():
-        for line in sys.stdin:
-            line = line.strip()
-            if line:
-                urls.append(line)
+    # Handle resume session
+    session = None
+    if resume_session:
+        session = SessionManager.load(resume_session)
+        if not session:
+            logger.error(f"Could not load session: {resume_session}")
+            return
+        
+        urls = session.get_pending_urls()
+        if not urls:
+            logger.info("Session already completed. No pending URLs.")
+            return
+        
+        # Use session config if available
+        if session.config:
+            custom_headers = session.config.get('headers', custom_headers)
+            concurrency = session.config.get('concurrency', concurrency)
+            rate_limit = session.config.get('rate_limit', rate_limit)
+        
+        logger.info(f"Resuming session {resume_session} with {len(urls)} remaining URLs")
+    else:
+        urls = []
+        if url:
+            urls.append(url)
+        
+        if file:
+            for line in file:
+                line = line.strip()
+                if line:
+                    urls.append(line)
+        
+        # Check for stdin
+        if not url and not file and not sys.stdin.isatty():
+            for line in sys.stdin:
+                line = line.strip()
+                if line:
+                    urls.append(line)
 
-    if not urls:
-        # Handle Raw Request
-        if request_file or raw:
-            content = request_file.read() if request_file else raw
-            try:
-                parsed = parse_raw_request(content)
-                logger.info(f"Loaded raw request: {parsed['method']} {parsed['url']}")
-                urls.append(parsed['url'])
-                
-                # Merge headers
-                combined = parsed['headers']
-                combined.update(custom_headers)
-                custom_headers = combined
-            except Exception as e:
-                logger.error(f"Failed to parse raw request: {e}")
-                return
+        if not urls:
+            # Handle Raw Request
+            if request_file or raw:
+                content = request_file.read() if request_file else raw
+                try:
+                    parsed = parse_raw_request(content)
+                    logger.info(f"Loaded raw request: {parsed['method']} {parsed['url']}")
+                    urls.append(parsed['url'])
+                    
+                    # Merge headers
+                    combined = parsed['headers']
+                    combined.update(custom_headers)
+                    custom_headers = combined
+                except Exception as e:
+                    logger.error(f"Failed to parse raw request: {e}")
+                    return
 
-    if not urls:
-        logger.error("No targets specified. Use --url, --file, --request-file, or pipe URLs via stdin.")
-        return
+        if not urls:
+            logger.error("No targets specified. Use --url, --file, --request-file, --resume, or pipe URLs via stdin.")
+            return
+        
+        # Create new session for pause/resume support
+        session = SessionManager()
+        session.initialize(urls, config={
+            'headers': custom_headers,
+            'concurrency': concurrency,
+            'rate_limit': rate_limit,
+        })
 
     logger.info(f"Starting scan for {len(urls)} URLs with concurrency {concurrency}")
+    click.secho(f"[*] Session ID: {session.session_id} (use --resume to continue if paused)", fg="cyan")
     
     engine = Engine(
         concurrency=concurrency,
@@ -228,6 +318,7 @@ def scan(ctx, url, file, request_file, raw, concurrency, header, output, open_br
         enforce_header_allowlist=cfg.get("enforce_header_allowlist", DEFAULT_CONFIG["enforce_header_allowlist"]),
         enable_waf_bypass=enable_waf_bypass, 
         waf_max_attempts=cfg.get("waf_max_attempts", DEFAULT_CONFIG["waf_max_attempts"]),
+        session=session,
     )
     findings = asyncio.run(engine.run(urls))
     

@@ -1,5 +1,6 @@
 import asyncio
-from typing import List, Dict, Iterable
+import signal
+from typing import List, Dict, Iterable, Optional
 from cpd.http_client import HttpClient
 from cpd.utils.logger import logger
 
@@ -16,6 +17,7 @@ class Engine:
         enforce_header_allowlist: bool = True,
         enable_waf_bypass: bool = True,
         waf_max_attempts: int = 50,
+        session: Optional["SessionManager"] = None,
     ):
         self.concurrency = concurrency
         self.timeout = timeout
@@ -27,6 +29,8 @@ class Engine:
         self.enforce_header_allowlist = enforce_header_allowlist
         self.enable_waf_bypass = enable_waf_bypass
         self.waf_max_attempts = waf_max_attempts
+        self.session = session
+        self._stop_requested = False
         self.stats = {
             'total_urls': 0,
             'skipped_status': 0,
@@ -43,52 +47,110 @@ class Engine:
             for key, value in headers.items()
             if key.lower() in self.cache_key_allowlist
         }
+    
+    def request_stop(self):
+        """Request graceful stop of the scan."""
+        self._stop_requested = True
+        logger.warning("Stop requested. Finishing current URLs and saving progress...")
 
     async def run(self, urls: List[str]):
         self.stats['total_urls'] = len(urls)
         """
-        Main execution loop.
+        Main execution loop with pause/resume support.
         """
-        # Worker Pool Pattern
-        queue = asyncio.Queue()
+        # Setup signal handler for graceful pause
+        def signal_handler(signum, frame):
+            self.request_stop()
         
-        # Populate queue
-        for url in urls:
-            queue.put_nowait(url)
+        # Register signal handler (Ctrl+C)
+        original_handler = signal.signal(signal.SIGINT, signal_handler)
+        
+        try:
+            # Worker Pool Pattern
+            queue = asyncio.Queue()
             
-        # Create workers
-        workers = []
-        all_findings = []
-        
-        async def worker():
-             while True:
-                 try:
-                     url = queue.get_nowait()
-                 except asyncio.QueueEmpty:
-                     break
-                 
-                 try:
-                     result = await self._process_url(client, url)
-                     if result:
-                         all_findings.extend(result)
-                 except Exception as e:
-                     logger.error(f"Error processing {url}: {e}")
-                 finally:
-                     queue.task_done()
+            # Populate queue
+            for url in urls:
+                queue.put_nowait(url)
+                
+            # Create workers
+            workers = []
+            all_findings = []
+            
+            # Track completion for session
+            completed_lock = asyncio.Lock()
+            
+            async def worker():
+                 while True:
+                     # Check for stop request
+                     if self._stop_requested:
+                         break
+                     
+                     try:
+                         url = queue.get_nowait()
+                     except asyncio.QueueEmpty:
+                         break
+                     
+                     try:
+                         result = await self._process_url(client, url)
+                         if result:
+                             all_findings.extend(result)
+                         
+                         # Update session if available
+                         if self.session:
+                             async with completed_lock:
+                                 self.session.mark_completed(url, result or [])
+                                 
+                     except Exception as e:
+                         logger.error(f"Error processing {url}: {e}")
+                     finally:
+                         queue.task_done()
 
-        async with HttpClient(timeout=self.timeout, rate_limit=self.rate_limit) as client:
-            # Launch workers
-            for _ in range(self.concurrency):
-                workers.append(asyncio.create_task(worker()))
-            
-            # Wait for all workers to finish
-            await asyncio.gather(*workers)
-            
-            logger.info(f"Scan complete: {self.stats['tested']}/{self.stats['total_urls']} tested, "
-                       f"{self.stats['findings']} vulnerabilities found, "
-                       f"{self.stats['skipped_status']} skipped (bad status), "
-                       f"{self.stats['skipped_unstable']} skipped (unstable)")
-            return all_findings
+            async with HttpClient(timeout=self.timeout, rate_limit=self.rate_limit) as client:
+                # Launch workers
+                for _ in range(self.concurrency):
+                    workers.append(asyncio.create_task(worker()))
+                
+                # Wait for all workers to finish
+                await asyncio.gather(*workers)
+                
+                # Handle pause/stop
+                if self._stop_requested:
+                    # Collect remaining URLs from queue
+                    remaining_urls = []
+                    while not queue.empty():
+                        try:
+                            remaining_urls.append(queue.get_nowait())
+                        except asyncio.QueueEmpty:
+                            break
+                    
+                    if self.session:
+                        self.session.pending_urls = remaining_urls
+                        self.session.update_stats(self.stats)
+                        self.session.pause()
+                    
+                    logger.info(f"Scan paused: {self.stats['tested']}/{self.stats['total_urls']} tested, "
+                               f"{self.stats['findings']} findings, {len(remaining_urls)} remaining")
+                    
+                    # Merge session findings with current findings
+                    if self.session:
+                        all_findings = self.session.findings
+                else:
+                    logger.info(f"Scan complete: {self.stats['tested']}/{self.stats['total_urls']} tested, "
+                               f"{self.stats['findings']} vulnerabilities found, "
+                               f"{self.stats['skipped_status']} skipped (bad status), "
+                               f"{self.stats['skipped_unstable']} skipped (unstable)")
+                    
+                    # Finalize session
+                    if self.session:
+                        self.session.update_stats(self.stats)
+                        self.session.finalize()
+                
+                return all_findings
+        
+        finally:
+            # Restore original signal handler
+            signal.signal(signal.SIGINT, original_handler)
 
     async def _process_url(self, client: HttpClient, url: str):
         from cpd.logic.baseline import BaselineAnalyzer
