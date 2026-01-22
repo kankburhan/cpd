@@ -19,6 +19,7 @@ from cpd.logic.smuggling import SmugglingDetector
 from cpd.logic.normalization import NormalizationTester
 from cpd.logic.blind import BlindCachePoisoner
 from cpd.logic.probing import CacheProber
+from cpd.logic.exotic_poisoning import ExoticPoisoner
 
 class Poisoner:
     def __init__(
@@ -157,7 +158,14 @@ class Poisoner:
         leakage_findings = await self.blind_poisoner.cache_buster_leakage(client, self.baseline.url)
         all_findings.extend(leakage_findings)
 
-        # 5. Standard Poisoning (Concurrent)
+        # 5. Exotic/Out-of-the-Box Poisoning Techniques
+        exotic_poisoner = ExoticPoisoner(self.baseline, self.safe_headers)
+        exotic_findings = await exotic_poisoner.run(client)
+        all_findings.extend(exotic_findings)
+        if exotic_findings:
+            logger.info(f"Exotic techniques found {len(exotic_findings)} potential vulnerabilities")
+
+        # 6. Standard Poisoning (Concurrent)
         tasks = []
         
         # Add Canary check

