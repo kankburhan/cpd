@@ -20,6 +20,9 @@ from cpd.logic.normalization import NormalizationTester
 from cpd.logic.blind import BlindCachePoisoner
 from cpd.logic.probing import CacheProber
 from cpd.logic.exotic_poisoning import ExoticPoisoner
+from cpd.logic.cpd_dos import CpDoSDetector
+from cpd.logic.cache_deception_v2 import CacheDeceptionV2
+from cpd.logic.upgrade_poison import UpgradePoisoner
 
 class Poisoner:
     def __init__(
@@ -164,6 +167,27 @@ class Poisoner:
         all_findings.extend(exotic_findings)
         if exotic_findings:
             logger.info(f"Exotic techniques found {len(exotic_findings)} potential vulnerabilities")
+
+        # 5a. Active CPDoS Detection (Header Overflow, Meta Char, Coding Attack, Method DoS)
+        cpd_dos = CpDoSDetector(self.baseline, self.safe_headers)
+        cpd_dos_findings = await cpd_dos.run(client)
+        all_findings.extend(cpd_dos_findings)
+        if cpd_dos_findings:
+            logger.info(f"CPDoS detection found {len(cpd_dos_findings)} potential vulnerabilities")
+
+        # 5b. Cache Deception v2 — URL Parser Confusion (2024 research)
+        cache_deception = CacheDeceptionV2(self.baseline, self.safe_headers)
+        deception_findings = await cache_deception.run(client)
+        all_findings.extend(deception_findings)
+        if deception_findings:
+            logger.info(f"Cache deception v2 found {len(deception_findings)} potential vulnerabilities")
+
+        # 5c. HTTP Upgrade Header Poisoning
+        upgrade_poison = UpgradePoisoner(self.baseline, self.safe_headers)
+        upgrade_findings = await upgrade_poison.run(client)
+        all_findings.extend(upgrade_findings)
+        if upgrade_findings:
+            logger.info(f"Upgrade poisoning found {len(upgrade_findings)} potential vulnerabilities")
 
         # 6. Standard Poisoning (Concurrent)
         tasks = []
