@@ -56,7 +56,9 @@ class FalsePositiveFilter:
         signature = finding.get('signature', {})
         payload_val = signature.get('value', '')
         
-        if payload_val and payload_val in verify_body:
+        # Guard: only score if payload is unique enough (> 4 chars) to avoid
+        # substring false positives in JSON responses (e.g. "99" matching "2699")
+        if payload_val and len(payload_val) > 4 and payload_val in verify_body:
              score += 20
              
         # 4. Entropy Analysis (Heuristic for "garbage" vs "content")

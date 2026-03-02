@@ -81,7 +81,7 @@ def get_all_signatures(payload_id: str) -> List[Dict]:
         {"name": "GraphQL-OperationName", "type": "query_param", "param": "operationName", "value": f"<svg onload=alert('{payload_id}')>"}, # New
 
         # --- Extended Header Reflection ---
-        {"name": "X-Forwarded-SSL", "header": "X-Forwarded-SSL", "value": "on"},
+        {"name": "X-Forwarded-SSL", "header": "X-Forwarded-SSL", "value": f"on-{payload_id}"},
         {"name": "X-Cluster-Client-IP", "header": "X-Cluster-Client-IP", "value": "127.0.0.1"},
         {"name": "Akamai-Pragma", "header": "Pragma", "value": "akamai-x-cache-on"},
         {"name": "Referer-Reflect", "header": "Referer", "value": f"https://evil-{payload_id}.com"},
@@ -187,8 +187,8 @@ def get_all_signatures(payload_id: str) -> List[Dict]:
         {"name": "Accept-JSON-Override", "type": "exotic", "header": "Accept", "value": "application/json"},
         
         # Age/Warning manipulation
-        {"name": "Age-Zero", "type": "exotic", "header": "Age", "value": "0"},
-        {"name": "Age-Max", "type": "exotic", "header": "Age", "value": "2147483647"},
+        {"name": "Age-Zero", "type": "exotic", "header": "Age", "value": f"0-{payload_id}"},
+        {"name": "Age-Max", "type": "exotic", "header": "Age", "value": f"2147483647-{payload_id}"},
         {"name": "Warning-Stale", "type": "exotic", "header": "Warning", "value": f'110 - "Response is stale {payload_id}"'},
         
         # Internal redirect headers (nginx/apache)
@@ -255,13 +255,13 @@ def get_all_signatures(payload_id: str) -> List[Dict]:
         # ===== NEW: Network Information / Client Hints Headers =====
         # These headers are increasingly unkeyed but may affect responses (geolocation, device adaptation)
         {"name": "DPR", "header": "DPR", "value": f"2.0-{payload_id}"},
-        {"name": "Width", "header": "Width", "value": f"9999"},
-        {"name": "Viewport-Width", "header": "Viewport-Width", "value": f"9999"},
+        {"name": "Width", "header": "Width", "value": f"9999-{payload_id}"},
+        {"name": "Viewport-Width", "header": "Viewport-Width", "value": f"9999-{payload_id}"},
         {"name": "Save-Data", "header": "Save-Data", "value": f"on-{payload_id}"},
-        {"name": "RTT", "header": "RTT", "value": f"999"},
-        {"name": "Downlink", "header": "Downlink", "value": f"99"},
-        {"name": "ECT", "header": "ECT", "value": f"slow-2g"},
-        {"name": "Device-Memory", "header": "Device-Memory", "value": f"0.5"},
+        {"name": "RTT", "header": "RTT", "value": f"999-{payload_id}"},
+        {"name": "Downlink", "header": "Downlink", "value": f"99-{payload_id}"},
+        {"name": "ECT", "header": "ECT", "value": f"slow-2g-{payload_id}"},
+        {"name": "Device-Memory", "header": "Device-Memory", "value": f"0.5-{payload_id}"},
 
         # ===== NEW: Fetch Metadata / Client Hint Headers =====
         # Browser-sent headers that may be unkeyed at CDN but affect responses

@@ -459,7 +459,8 @@ class Poisoner:
 
         # 2. Reflected Header/Param in Verify Response?
         sig_check = signature.get('check_value') or signature.get('value', '___')
-        if sig_check in str(verify_resp['headers']) or sig_check in str(verify_resp['body']):
+        # Guard: skip ambiguous short values (e.g. "99", "0") that could match anywhere in a JSON body
+        if len(sig_check) > 4 and (sig_check in str(verify_resp['headers']) or sig_check in str(verify_resp['body'])):
              # Ignore if in baseline
              if sig_check not in str(self.baseline.body) and sig_check not in str(self.baseline.headers):
                   
