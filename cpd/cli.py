@@ -456,8 +456,6 @@ def validate(url, header, method, body):
 
     asyncio.run(_run_validation())
 
-    asyncio.run(_run_validation())
-
 @cli.command("waf-detect")
 @click.option('--url', '-u', required=True, help="Target URL to check.")
 def waf_detect(url):
