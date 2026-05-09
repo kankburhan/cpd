@@ -23,6 +23,7 @@ from cpd.logic.exotic_poisoning import ExoticPoisoner
 from cpd.logic.cpd_dos import CpDoSDetector
 from cpd.logic.cache_deception_v2 import CacheDeceptionV2
 from cpd.logic.upgrade_poison import UpgradePoisoner
+from cpd.logic.nextjs_poisoning import NextJsPoisoner
 
 class Poisoner:
     def __init__(
@@ -188,6 +189,13 @@ class Poisoner:
         all_findings.extend(upgrade_findings)
         if upgrade_findings:
             logger.info(f"Upgrade poisoning found {len(upgrade_findings)} potential vulnerabilities")
+
+        # 5d. Next.js-Specific Cache Poisoning (CVE-2026-44572/44575/44576/44579/44581/44582)
+        nextjs_poison = NextJsPoisoner(self.baseline, self.safe_headers)
+        nextjs_findings = await nextjs_poison.run(client)
+        all_findings.extend(nextjs_findings)
+        if nextjs_findings:
+            logger.info(f"Next.js poisoning found {len(nextjs_findings)} potential vulnerabilities")
 
         # 6. Standard Poisoning (Concurrent)
         tasks = []

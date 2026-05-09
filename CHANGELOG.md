@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-05-09
+
+### Added
+- Next.js cache poisoning detection module (`nextjs_poisoning.py`) covering 9 CVEs from the v16.2.4 security release.
+- CVE-2026-44572: `x-nextjs-data` redirect cache poisoning detection.
+- CVE-2026-44576: RSC/HTML cache confusion detection.
+- CVE-2026-44582: Weak `_rsc` hash collision probe.
+- CVE-2026-44575: `.rsc` suffix middleware bypass detection.
+- CVE-2026-44573: i18n data-route bypass detection.
+- CVE-2026-44574: `nxtP`/`nxtI` parameter injection detection.
+- CVE-2026-44579: `next-resume` header injection (cache poisoning + CPDoS).
+- CVE-2026-44581: CSP nonce reflection via cache.
+- CVE-2026-23870: Server-action stream DoS signature.
+- 18 new signatures in `signatures.py` for Next.js CVE-2026 vectors.
+- 12 new unit tests for Next.js poisoning techniques.
+
 ## [0.7.1] - 2026-01-20
 
 ### Added

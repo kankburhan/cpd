@@ -164,6 +164,16 @@ cpd-sec update
     - **Unkeyed Query Params**: Injects parameters to test cache key inclusion.
     - **Method Override**: Tests `X-HTTP-Method-Override`.
     - **Cache Key Confusion**: Tests URL encoding variants and cache key calculation.
+    - **Next.js Cache Poisoning (CVE-2026)**: Dedicated detection module for 9 Next.js CVEs:
+        - `CVE-2026-44572`: `x-nextjs-data` redirect cache poisoning
+        - `CVE-2026-44576`: RSC/HTML cache confusion
+        - `CVE-2026-44582`: Weak `_rsc` cache-busting hash collision
+        - `CVE-2026-44575`: App Router middleware bypass via `.rsc` suffix
+        - `CVE-2026-44573`: Pages Router i18n data-route bypass
+        - `CVE-2026-44574`: `nxtP`/`nxtI` parameter injection
+        - `CVE-2026-44579`: `next-resume` header injection (cache poisoning + CPDoS)
+        - `CVE-2026-44581`: CSP nonce reflection via cache
+        - `CVE-2026-23870`: Server-action stream DoS
 - **Pipeline Ready**: Designed to integrate into your reconnaissance workflow.
 
 ## Contributing
