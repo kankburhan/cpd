@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.1] - 2026-05-09
+
+### Fixed
+- `X-Cache: CONFIG_NOCACHE` and similar no-cache values no longer treated as cache HIT evidence.
+- `validator.py` skips headers whose value explicitly signals CDN bypass/no-cache.
+- `nextjs_poisoning.py`: `_i18n_data_route_bypass` now requires three conditions before flagging — i18n configured, route gated (4xx/3xx without header), and sensitive fields in response. Eliminates false positives on public Next.js data endpoints.
+
 ## [0.10.0] - 2026-05-09
 
 ### Added
