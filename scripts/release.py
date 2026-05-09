@@ -85,7 +85,9 @@ def update_changelog(new: str) -> None:
 
 def git_clean() -> bool:
     r = run(["git", "status", "--porcelain"], check=False)
-    return r.stdout.strip() == ""
+    # Lines starting with "??" are untracked files — irrelevant for a release.
+    dirty = [l for l in r.stdout.splitlines() if not l.startswith("??")]
+    return len(dirty) == 0
 
 
 def main() -> None:
@@ -104,12 +106,13 @@ def main() -> None:
     print(f"\ncpd-sec release: {old_ver} → {new_ver}")
     print(f"Tag: {tag}\n")
 
-    # Guard: check working tree is clean
+    # Guard: check working tree has no staged/modified tracked files
     if not git_clean():
-        result = run(["git", "status", "--short"], check=False)
-        print(result.stdout)
+        result = run(["git", "status", "--porcelain"], check=False)
+        dirty = [l for l in result.stdout.splitlines() if not l.startswith("??")]
+        print("\n".join(dirty))
         if not args.dry_run:
-            sys.exit("ERROR: working tree is not clean. Commit or stash changes first.")
+            sys.exit("ERROR: tracked files have uncommitted changes. Commit or stash first.")
         print("  (dry-run: would abort here)\n")
 
     # Guard: tag must not already exist
