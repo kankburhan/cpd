@@ -2,6 +2,18 @@ from typing import Dict, Optional, Tuple
 from cpd.http_client import HttpClient
 from cpd.utils.logger import logger
 
+# Header values that explicitly mean "this response was NOT served from cache"
+_NOCACHE_VALUES = frozenset({
+    "config_nocache", "nocache", "bypass", "miss", "dynamic",
+    "pass", "expired", "uncached", "disabled", "none", "off", "no-cache",
+})
+
+
+def _is_nocache_value(value: str) -> bool:
+    normalized = value.lower().replace("-", "_").replace(" ", "_")
+    return any(v in normalized for v in _NOCACHE_VALUES)
+
+
 class CacheValidator:
     def __init__(self):
         self.cache_headers = [
@@ -56,6 +68,10 @@ class CacheValidator:
                             # If it's Server-Timing but doesn't mention cache, keep looking
                             continue
 
+                    # Skip headers whose value explicitly signals no caching
+                    if _is_nocache_value(val):
+                        logger.info(f"Skipping {key}: {val} (no-cache indicator, not a cache HIT)")
+                        continue
                     return True, f"Found cache header: {key}"
 
         # 2. Heuristic/Behavioral Check (Optional)

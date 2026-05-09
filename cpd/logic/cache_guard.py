@@ -32,6 +32,13 @@ class CacheGuard:
         "via",
         "age",
     }
+
+    # Values that explicitly mean "not cached" — must NOT be treated as HIT
+    CACHE_MISS_VALUES = {
+        "config_nocache", "nocache", "bypass", "miss", "dynamic",
+        "pass", "expired", "uncached", "disabled", "none", "off",
+        "no-cache",
+    }
     DEFAULT_IGNORED_QUERY_PARAMS = {
         "utm_*",
         "gclid",
@@ -173,8 +180,13 @@ class CacheGuard:
                         evidence.append(f"Age={value}")
                 except (ValueError, TypeError):
                     continue
-            elif any(token in value_lower for token in ["hit", "cached", "cache"]):
-                evidence.append(f"{name}={value}")
+            else:
+                # Reject values that explicitly indicate the response is NOT cached
+                normalized = value_lower.replace("-", "_").replace(" ", "_")
+                if any(miss in normalized for miss in cls.CACHE_MISS_VALUES):
+                    continue
+                if any(token in value_lower for token in ["hit", "cached"]):
+                    evidence.append(f"{name}={value}")
         return bool(evidence), evidence
 
     async def register_fingerprint(self, cache_key: str, resp: Dict[str, str]) -> Optional[str]:

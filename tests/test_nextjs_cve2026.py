@@ -241,21 +241,85 @@ class TestCVE2026_44573:
     @pytest.mark.asyncio
     async def test_i18n_bypass_detected(self, mock_client, baseline_html):
         poisoner = NextJsPoisoner(baseline_html)
-        html_with_buildid = b'<script>__NEXT_DATA__={"buildId":"abc123XYZ","props":{}}</script>'
+        # HTML with i18n signals (locales + buildId) and a protected data route
+        html_with_i18n = (
+            b'<script>__NEXT_DATA__={"buildId":"abc123XYZ","props":{},'
+            b'"locales":["en","fr"],"locale":"en"}</script>'
+            b'<link rel="alternate" hreflang="fr" href="/fr/dashboard">'
+        )
 
         mock_client.request.side_effect = [
-            # Initial request to extract buildId
+            # Initial fetch to extract buildId + i18n signals
             {"status": 200, "headers": {"Content-Type": "text/html"},
-             "body": html_with_buildid},
-            # Data-route request: returns pageProps JSON
+             "body": html_with_i18n},
+            # Data-route WITHOUT bypass header → gated (401)
+            {"status": 401, "headers": {}, "body": b"Unauthorized"},
+            # Data-route WITH x-nextjs-data: 1 → 200 with sensitive props
             {"status": 200, "headers": {"Content-Type": "application/json"},
-             "body": b'{"pageProps":{"user":"admin","secret":"s3cr3t"}}'},
+             "body": b'{"pageProps":{"user":"admin@corp.com","token":"s3cr3t-jwt"}}'},
         ]
 
         findings = await poisoner._i18n_data_route_bypass(mock_client)
         assert findings is not None
         assert findings["vulnerability"] == "NextJS-i18n-DataRouteBypass"
         assert findings["cve"] == "CVE-2026-44573"
+        assert findings["normal_status"] == 401
+
+    @pytest.mark.asyncio
+    async def test_i18n_bypass_no_finding_public_route(self, mock_client, baseline_html):
+        """Public data routes (200 without bypass header) must NOT be flagged."""
+        poisoner = NextJsPoisoner(baseline_html)
+        html_with_i18n = (
+            b'<script>__NEXT_DATA__={"buildId":"abc123XYZ","props":{},'
+            b'"locales":["en","fr"]}</script>'
+        )
+
+        mock_client.request.side_effect = [
+            {"status": 200, "headers": {"Content-Type": "text/html"},
+             "body": html_with_i18n},
+            # Data-route accessible without header → public, not a bypass
+            {"status": 200, "headers": {"Content-Type": "application/json"},
+             "body": b'{"pageProps":{"title":"Home"}}'},
+        ]
+
+        findings = await poisoner._i18n_data_route_bypass(mock_client)
+        assert findings is None
+
+    @pytest.mark.asyncio
+    async def test_i18n_bypass_no_finding_without_i18n(self, mock_client, baseline_html):
+        """Sites without i18n config must NOT be flagged."""
+        poisoner = NextJsPoisoner(baseline_html)
+        # No locale signals in HTML
+        html_no_i18n = b'<script>__NEXT_DATA__={"buildId":"abc123XYZ","props":{}}</script>'
+
+        mock_client.request.side_effect = [
+            {"status": 200, "headers": {"Content-Type": "text/html"},
+             "body": html_no_i18n},
+        ]
+
+        findings = await poisoner._i18n_data_route_bypass(mock_client)
+        assert findings is None
+
+    @pytest.mark.asyncio
+    async def test_i18n_bypass_no_finding_no_sensitive_data(self, mock_client, baseline_html):
+        """Gated route that returns only non-sensitive props must NOT be flagged."""
+        poisoner = NextJsPoisoner(baseline_html)
+        html_with_i18n = (
+            b'<script>__NEXT_DATA__={"buildId":"abc123XYZ","locales":["en","fr"]}</script>'
+        )
+
+        mock_client.request.side_effect = [
+            {"status": 200, "headers": {"Content-Type": "text/html"},
+             "body": html_with_i18n},
+            # Gated without bypass header
+            {"status": 403, "headers": {}, "body": b"Forbidden"},
+            # Accessible with bypass header but only public/safe props
+            {"status": 200, "headers": {"Content-Type": "application/json"},
+             "body": b'{"pageProps":{"title":"Dashboard","menuItems":[]}}'},
+        ]
+
+        findings = await poisoner._i18n_data_route_bypass(mock_client)
+        assert findings is None
 
 
 class TestNextJsPoisonerIntegration:
