@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.3] - 2026-08-01
+
 ### Added
 - `cpd/logic/control.py`: `stable_hash()` (hashes with our own cache-buster token neutralised), `control_probe()` (fetches a second cache-busted copy with clean headers as the correct "did this change anything?" reference), and `new_cb()` (fixed-width buster so a reflection cannot shift response length).
 
