@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-08-02
+
 ### Added
 - Host-blind cache key detection (`cpd/logic/host_key.py`). A cache key built from the URI alone, omitting the Host/authority, lets one virtual host poison another — this is CVE-2026-2836 in Cloudflare Pingora (all versions < 0.8.0), whose default cache key used only the URI. The probe tests for the behaviour rather than fingerprinting a product, since the same shape occurs in any hand-rolled proxy cache. A spoofed Host returning different content is not treated as a finding on its own (that is just virtual hosting working); the clean request must come back carrying the spoofed host's response. Guarded by two agreeing control probes, a stability recheck, and a fresh-key drift check.
 - Next.js internal cache poisoning detection (CVE-2024-46982), ranked #7 in PortSwigger's Top 10 Web Hacking Techniques of 2025. On the pages router (13.5.1 – 14.2.9) the internal `x-now-route-matches` header makes a server-rendered request be classified as static, flipping `Cache-Control` from `private, no-cache, no-store` to `s-maxage=1, stale-while-revalidate` — a per-user response becomes shared-cacheable. Causes DoS when JSON replaces HTML, and stored XSS when `getServerSideProps` reflects request data. The `__nextDataReq` parameter reaches the same code path, was explicitly not covered by the CVE, and is reported as unpatched even on fixed builds.
