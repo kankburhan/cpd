@@ -25,6 +25,7 @@ from cpd.logic.cpd_dos import CpDoSDetector
 from cpd.logic.cache_deception_v2 import CacheDeceptionV2
 from cpd.logic.upgrade_poison import UpgradePoisoner
 from cpd.logic.nextjs_poisoning import NextJsPoisoner
+from cpd.logic.host_key import HostKeyProbe
 
 class Poisoner:
     def __init__(
@@ -197,6 +198,13 @@ class Poisoner:
         all_findings.extend(nextjs_findings)
         if nextjs_findings:
             logger.info(f"Next.js poisoning found {len(nextjs_findings)} potential vulnerabilities")
+
+        # 5e. Host-blind cache key (CVE-2026-2836 class)
+        host_key = HostKeyProbe(self.baseline, self.safe_headers)
+        host_key_findings = await host_key.run(client)
+        all_findings.extend(host_key_findings)
+        if host_key_findings:
+            logger.info("Host-blind cache key detected — Host is absent from the cache key")
 
         # 6. Standard Poisoning (Concurrent)
         tasks = []
