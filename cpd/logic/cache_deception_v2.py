@@ -32,6 +32,7 @@ from urllib.parse import urlparse
 from cpd.http_client import HttpClient
 from cpd.logic.baseline import Baseline
 from cpd.logic.cache_guard import CacheGuard
+from cpd.logic.control import control_probe, new_cb, stable_hash
 from cpd.utils.logger import logger
 
 
@@ -67,10 +68,32 @@ class CacheDeceptionV2:
         self.safe_headers = safe_headers or {}
         self.payload_id = str(uuid.uuid4())[:8]
         self._parsed = urlparse(baseline.url)
+        self._control_hash = None
+        self._control_lock = asyncio.Lock()
+
+    async def _get_control_hash(self, client: HttpClient) -> Optional[str]:
+        """
+        Reference for "did the deception URL serve the protected page?".
+
+        It must be cache-busted like the probes are: Baseline.body_hash was
+        captured on the clean URL, so on any target that reflects the query
+        string it never matches a `?cb=` probe and every deception is missed.
+        Fetched once and shared by the four concurrent techniques.
+        """
+        async with self._control_lock:
+            if self._control_hash is None:
+                control = await control_probe(client, self.baseline.url, self.safe_headers)
+                if control:
+                    self._control_hash = control[0]
+            return self._control_hash
 
     async def run(self, client: HttpClient) -> List[Dict]:
         """Execute all cache deception v2 detection techniques."""
         findings = []
+
+        if await self._get_control_hash(client) is None:
+            logger.debug("Cache deception v2: control probe failed, skipping")
+            return findings
 
         tasks = [
             asyncio.create_task(self._test_delimiter_confusion(client)),
@@ -101,6 +124,9 @@ class CacheDeceptionV2:
         This exposes sensitive content to unauthenticated attackers.
         """
         findings = []
+        control_hash = await self._get_control_hash(client)
+        if control_hash is None:
+            return findings
         path = self._parsed.path or "/"
         scheme_host = f"{self._parsed.scheme}://{self._parsed.netloc}"
 
@@ -108,7 +134,8 @@ class CacheDeceptionV2:
         for ext in STATIC_EXTENSIONS[:3]:
             for delim_name, delim, description in PATH_DELIMITERS:
                 mal_path = path.rstrip("/") + delim + ext
-                cb = f"cb={int(time.time())}_{random.randint(1000, 9999)}"
+                cb_name, cb_value = new_cb()
+                cb = f"{cb_name}={cb_value}"
                 target_url = f"{scheme_host}{mal_path}?{cb}"
 
                 try:
@@ -121,14 +148,14 @@ class CacheDeceptionV2:
                 if not deception_resp or deception_resp["status"] != 200:
                     continue
 
-                resp_hash = hashlib.sha256(deception_resp.get("body", b"")).hexdigest()
+                resp_hash = stable_hash(deception_resp.get("body", b""), cb_value)
                 is_cached, cache_evidence = CacheGuard.cache_hit_signal(deception_resp)
                 _, cacheable_reason = CacheGuard.is_cacheable(
                     deception_resp, deception_resp["status"]
                 )
 
                 # Strong signal: same body as authenticated endpoint + cache hit
-                if resp_hash == self.baseline.body_hash and is_cached:
+                if resp_hash == control_hash and is_cached:
                     findings.append(self._make_finding(
                         "CacheDeceptionV2-DelimiterConfusion",
                         "CRITICAL",
@@ -147,7 +174,7 @@ class CacheDeceptionV2:
                     break  # One finding per extension per delimiter set
 
                 # Medium signal: cacheable response matching baseline (no explicit hit header)
-                elif resp_hash == self.baseline.body_hash and "public" in str(
+                elif resp_hash == control_hash and "public" in str(
                     deception_resp.get("headers", {}).get("cache-control", "")
                 ).lower():
                     findings.append(self._make_finding(
@@ -177,6 +204,9 @@ class CacheDeceptionV2:
         poison the /api/user cache entry via a static-looking traversal path.
         """
         findings = []
+        control_hash = await self._get_control_hash(client)
+        if control_hash is None:
+            return findings
         path = self._parsed.path or "/"
         scheme_host = f"{self._parsed.scheme}://{self._parsed.netloc}"
 
@@ -189,7 +219,8 @@ class CacheDeceptionV2:
         ]
 
         for name, mal_path in traversal_tests:
-            cb = f"cb={int(time.time())}_{random.randint(1000, 9999)}"
+            cb_name, cb_value = new_cb()
+            cb = f"{cb_name}={cb_value}"
             target_url = f"{scheme_host}{mal_path}?{cb}"
 
             try:
@@ -200,9 +231,9 @@ class CacheDeceptionV2:
             if not resp or resp["status"] != 200:
                 continue
 
-            resp_hash = hashlib.sha256(resp.get("body", b"")).hexdigest()
+            resp_hash = stable_hash(resp.get("body", b""), cb_value)
 
-            if resp_hash == self.baseline.body_hash:
+            if resp_hash == control_hash:
                 is_cached, evidence = CacheGuard.cache_hit_signal(resp)
 
                 findings.append(self._make_finding(
@@ -226,6 +257,9 @@ class CacheDeceptionV2:
         If cached, the authenticated response is publicly accessible.
         """
         findings = []
+        control_hash = await self._get_control_hash(client)
+        if control_hash is None:
+            return findings
         path = self._parsed.path or "/"
         scheme_host = f"{self._parsed.scheme}://{self._parsed.netloc}"
 
@@ -234,7 +268,8 @@ class CacheDeceptionV2:
         for dyn_ext in dynamic_extensions:
             for static_ext in STATIC_EXTENSIONS[:2]:
                 mal_path = path.rstrip("/") + dyn_ext + static_ext
-                cb = f"cb={int(time.time())}_{random.randint(1000, 9999)}"
+                cb_name, cb_value = new_cb()
+                cb = f"{cb_name}={cb_value}"
                 target_url = f"{scheme_host}{mal_path}?{cb}"
 
                 try:
@@ -245,9 +280,9 @@ class CacheDeceptionV2:
                 if not resp or resp["status"] != 200:
                     continue
 
-                resp_hash = hashlib.sha256(resp.get("body", b"")).hexdigest()
+                resp_hash = stable_hash(resp.get("body", b""), cb_value)
 
-                if resp_hash == self.baseline.body_hash:
+                if resp_hash == control_hash:
                     is_cached, evidence = CacheGuard.cache_hit_signal(resp)
 
                     if is_cached:
@@ -276,6 +311,9 @@ class CacheDeceptionV2:
         that response gets cached under a publicly cacheable key.
         """
         findings = []
+        control_hash = await self._get_control_hash(client)
+        if control_hash is None:
+            return findings
         path = self._parsed.path or "/"
         scheme_host = f"{self._parsed.scheme}://{self._parsed.netloc}"
 
@@ -287,7 +325,8 @@ class CacheDeceptionV2:
         ]
 
         for name, mal_path in matrix_tests:
-            cb = f"cb={int(time.time())}_{random.randint(1000, 9999)}"
+            cb_name, cb_value = new_cb()
+            cb = f"{cb_name}={cb_value}"
             target_url = f"{scheme_host}{mal_path}?{cb}"
 
             try:
@@ -298,9 +337,9 @@ class CacheDeceptionV2:
             if not resp or resp["status"] != 200:
                 continue
 
-            resp_hash = hashlib.sha256(resp.get("body", b"")).hexdigest()
+            resp_hash = stable_hash(resp.get("body", b""), cb_value)
 
-            if resp_hash == self.baseline.body_hash:
+            if resp_hash == control_hash:
                 is_cached, evidence = CacheGuard.cache_hit_signal(resp)
 
                 if is_cached:

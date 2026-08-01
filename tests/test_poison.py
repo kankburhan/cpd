@@ -1,3 +1,4 @@
+import hashlib
 import pytest
 import asyncio
 from unittest.mock import AsyncMock, MagicMock
@@ -6,11 +7,15 @@ from cpd.logic.baseline import Baseline
 
 @pytest.fixture
 def mock_baseline():
+    body = b"Content A"
     return Baseline(
         url="https://example.com/foo",
         status=200,
         headers={"Server": "Test"},
-        body_hash="02f67ccd1094983cb438874466ce795ddf13ec4989dbd10eebfcf3ab2c8c04ca",
+        # Must match body: BaselineAnalyzer always derives one from the other,
+        # and the drift guard hashes baseline.body directly.
+        body_hash=hashlib.sha256(body).hexdigest(),
+        body=body,
         is_stable=True
     )
 

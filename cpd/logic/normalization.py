@@ -135,6 +135,25 @@ class NormalizationTester:
 
         return variants
     
+    @staticmethod
+    def _followed_redirect(requested: str, final: str) -> bool:
+        """
+        True if the client was redirected away from the variant it asked for.
+
+        Without this check an uppercase variant that 301s to the canonical URL
+        looks exactly like a cache-key collision: the client silently follows
+        the redirect, lands on the canonical page and reports "cache HIT
+        matching baseline content" -- which is just the redirect working.
+        Scheme and host are compared case-insensitively because clients
+        normalise them; the path and query are not.
+        """
+        if not final:
+            return False
+        a, b = urlparse(requested), urlparse(final)
+        if (a.scheme.lower(), a.netloc.lower()) != (b.scheme.lower(), b.netloc.lower()):
+            return True
+        return (a.path, a.query) != (b.path, b.query)
+
     async def test_cache_key_confusion(self, client: HttpClient, base_url: str, baseline_fingerprint: str) -> List[Dict]:
         """
         Test if different URLs hit the same cache key as the baseline.
@@ -151,7 +170,11 @@ class NormalizationTester:
             resp = await client.request("GET", variant_url)
             if not resp:
                 continue
-                
+
+            # A followed redirect is not a cache-key collision.
+            if self._followed_redirect(variant_url, resp.get("url", "")):
+                continue
+
             fingerprint = CacheGuard.fingerprint_response(resp)
             
             # If the content is identical to the baseline, it *might* be a cache hit (collision)

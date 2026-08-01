@@ -108,11 +108,13 @@ class TestExoticPoisoner:
         poisoner = ExoticPoisoner(baseline, {})
         payload_id = poisoner.payload_id
         
-        # Configure client to reflect X-Forwarded-Host value
+        # Configure client to reflect X-Forwarded-Host value.
+        # Each sub-test now carries its own marker so a reflection can be
+        # attributed to the header that caused it; Conn-XFH is the first.
         responses = {
             "*": {
                 "status": 200,
-                "body": f"<html>Host: evil-{payload_id}.com</html>".encode(),
+                "body": f"<html>Host: evil-{payload_id}-conn-xfh.com</html>".encode(),
                 "headers": {"Content-Type": "text/html"}
             }
         }

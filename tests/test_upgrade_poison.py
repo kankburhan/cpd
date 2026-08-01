@@ -86,13 +86,15 @@ async def test_h2c_no_finding_if_not_cached():
     poisoner = UpgradePoisoner(baseline)
 
     client = AsyncMock()
-    # The function makes up to 3 requests:
+    # The function makes up to 4 requests:
     # 1. Poison attempt → 426
     # 2. Verify for cached error status → 200 (not cached, passes through)
-    # 3. Secondary content-mismatch verify → same baseline body (no mismatch)
+    # 3. Control probe (cache-busted, clean headers) → baseline content
+    # 4. Secondary content-mismatch verify → same baseline body (no mismatch)
     client.request = AsyncMock(side_effect=[
         make_response(status=426, body=b"Upgrade Required"),  # Poison triggers error
         make_response(status=200),                            # Verify is clean (not cached)
+        make_response(status=200),                            # Control
         make_response(status=200),                            # Secondary check - baseline content
     ])
 
@@ -113,16 +115,42 @@ async def test_h2c_detects_content_mismatch():
     client = AsyncMock()
     client.request = AsyncMock(side_effect=[
         make_response(status=200, body=altered_body),  # Different content from h2c
+        make_response(status=200),                     # Control (clean headers, cache-busted)
         make_response(status=200, body=altered_body),  # Verify serves same altered content
+    ])
+
+    with patch("cpd.logic.upgrade_poison.CacheGuard.cache_hit_signal",
+               return_value=(True, ["X-Cache: HIT"])):
+        finding = await poisoner._h2c_upgrade_poison(client)
+
+    assert finding is not None
+    assert finding["vulnerability"] == "UpgradePoisoning-h2c-ContentMismatch"
+    assert finding["severity"] == "MEDIUM"
+
+
+@pytest.mark.asyncio
+async def test_h2c_content_mismatch_needs_cache_hit():
+    """
+    Altered content that is never actually cached is origin behaviour, not
+    poisoning. Without this gate the check fires on any target whose response
+    varies for reasons unrelated to the cache.
+    """
+    baseline = MockBaseline()
+    poisoner = UpgradePoisoner(baseline)
+
+    altered_body = b"<html>Upgrade redirect page</html>"
+    client = AsyncMock()
+    client.request = AsyncMock(side_effect=[
+        make_response(status=200, body=altered_body),
+        make_response(status=200),
+        make_response(status=200, body=altered_body),
     ])
 
     with patch("cpd.logic.upgrade_poison.CacheGuard.cache_hit_signal",
                return_value=(False, [])):
         finding = await poisoner._h2c_upgrade_poison(client)
 
-    assert finding is not None
-    assert finding["vulnerability"] == "UpgradePoisoning-h2c-ContentMismatch"
-    assert finding["severity"] == "MEDIUM"
+    assert finding is None
 
 
 @pytest.mark.asyncio

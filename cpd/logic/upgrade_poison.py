@@ -29,6 +29,7 @@ from typing import Dict, List, Optional
 from cpd.http_client import HttpClient
 from cpd.logic.baseline import Baseline
 from cpd.logic.cache_guard import CacheGuard
+from cpd.logic.control import add_cb, control_probe, new_cb, stable_hash
 from cpd.utils.logger import logger
 
 
@@ -82,8 +83,8 @@ class UpgradePoisoner:
         The cache key typically does not include Upgrade, so the poisoned
         response may be served to all users requesting the same URL.
         """
-        cache_buster = f"cb={int(time.time())}_{random.randint(1000, 9999)}"
-        target_url = self._add_cb(self.baseline.url, cache_buster)
+        cb_name, cb_value = new_cb()
+        target_url = add_cb(self.baseline.url, cb_name, cb_value)
 
         headers = {
             **self.safe_headers,
@@ -119,14 +120,22 @@ class UpgradePoisoner:
                         cache_evidence=evidence,
                     )
 
-        # Secondary check: content mismatch caused by h2c upgrade
-        poison_hash = hashlib.sha256(poison_resp.get("body", b"")).hexdigest()
-        if poison_hash != self.baseline.body_hash:
+        # Secondary check: content mismatch caused by h2c upgrade.
+        # The reference is a cache-busted control, not Baseline.body_hash -- the
+        # latter was captured without our `?cb=`, so on any target that reflects
+        # the query string it never matches and every probe looks like a hit.
+        control = await control_probe(client, self.baseline.url, self.safe_headers)
+        if not control:
+            return None
+        control_hash, _ = control
+
+        poison_hash = stable_hash(poison_resp.get("body", b""), cb_value)
+        if poison_hash != control_hash:
             verify_resp = await client.request("GET", target_url, headers=self.safe_headers)
             if verify_resp:
-                verify_hash = hashlib.sha256(verify_resp.get("body", b"")).hexdigest()
-                if verify_hash == poison_hash and verify_hash != self.baseline.body_hash:
-                    is_hit, evidence = CacheGuard.cache_hit_signal(verify_resp)
+                verify_hash = stable_hash(verify_resp.get("body", b""), cb_value)
+                is_hit, evidence = CacheGuard.cache_hit_signal(verify_resp)
+                if verify_hash == poison_hash and is_hit:
                     return self._make_finding(
                         "UpgradePoisoning-h2c-ContentMismatch",
                         "MEDIUM",

@@ -155,6 +155,9 @@ class TestCVE2026_44574:
         different_body = b"<html><body>Admin panel - completely different content</body></html>"
 
         mock_client.request.side_effect = [
+            # Control probe: cache-busted copy fetched with clean headers
+            {"status": 200, "headers": {"Content-Type": "text/html"},
+             "body": b"<html><body>Normal HTML page content here for testing</body></html>"},
             # nxtPslug: returns different content
             {"status": 200, "headers": {"Content-Type": "text/html"},
              "body": different_body},
@@ -186,6 +189,9 @@ class TestCVE2026_44579:
             # Poison: next-resume causes different content
             {"status": 200, "headers": {"Content-Type": "text/html"},
              "body": different_body},
+            # Control probe: cache-busted copy fetched with clean headers
+            {"status": 200, "headers": {"Content-Type": "text/html"},
+             "body": b"<html><body>Normal HTML page content here for testing</body></html>"},
             # Verify: cached different content
             {"status": 200, "headers": {"Content-Type": "text/html", "X-Cache": "HIT"},
              "body": different_body},

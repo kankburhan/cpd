@@ -16,6 +16,7 @@ from datetime import datetime, timedelta
 from cpd.http_client import HttpClient
 from cpd.logic.baseline import Baseline
 from cpd.logic.cache_guard import CacheGuard
+from cpd.logic.control import add_cb, control_probe, new_cb, stable_hash
 from cpd.utils.logger import logger
 
 
@@ -144,9 +145,15 @@ class ExoticPoisoner:
         Uses edge cases in content negotiation that may be unkeyed but affect response.
         """
         findings = []
-        cache_buster = f"cb={int(time.time())}_{random.randint(1000,9999)}"
-        target_url = self._add_cb(self.baseline.url, cache_buster)
-        
+
+        # Reference must come from a cache-busted URL too, otherwise a target
+        # that reflects the query string differs from the clean-URL baseline on
+        # every probe and all five signatures fire. See cpd/logic/control.py.
+        control = await control_probe(client, self.baseline.url, self.safe_headers)
+        if not control:
+            return []
+        control_hash, _ = control
+
         # Edge case accept headers that might bypass cache or trigger different behavior
         test_cases = [
             # Low quality factor edge case
@@ -162,31 +169,54 @@ class ExoticPoisoner:
         ]
         
         for name, accept_value in test_cases:
+            cb_name, cb_value = new_cb()
+            target_url = add_cb(self.baseline.url, cb_name, cb_value)
+
             headers = {**self.safe_headers, "Accept": accept_value}
             poison_resp = await client.request("GET", target_url, headers=headers)
-            
             if not poison_resp:
                 continue
-                
-            # Check if accept affects content but is unkeyed
+
+            poison_hash = stable_hash(poison_resp.get('body', b''), cb_value)
+
+            # Gate 1: the header has to actually change the response.
+            if poison_hash == control_hash:
+                continue
+
             verify_resp = await client.request("GET", target_url, headers=self.safe_headers)
             if not verify_resp:
                 continue
-                
-            # If verify response differs from baseline AND matches poison, it's cached
-            poison_hash = hashlib.sha256(poison_resp.get('body', b'')).hexdigest()
-            verify_hash = hashlib.sha256(verify_resp.get('body', b'')).hexdigest()
-            baseline_hash = self.baseline.body_hash
-            
-            if verify_hash == poison_hash and verify_hash != baseline_hash:
-                findings.append(self._make_finding(
-                    "AcceptHeaderPoisoning",
-                    "HIGH",
-                    f"Accept header '{accept_value[:50]}' is unkeyed but affects cached response.",
-                    {"name": name, "header": "Accept", "value": accept_value},
-                    target_url
-                ))
-                
+
+            # Gate 2: a clean request must get the poisoned body back.
+            if stable_hash(verify_resp.get('body', b''), cb_value) != poison_hash:
+                continue
+
+            # Gate 3: it must be a real cache hit. Without this we cannot tell a
+            # poisoned entry from an origin that deterministically returns this
+            # body to everyone.
+            is_hit, cache_evidence = CacheGuard.cache_hit_signal(verify_resp)
+            if not is_hit:
+                continue
+
+            findings.append(self._make_finding(
+                "AcceptHeaderPoisoning",
+                "HIGH",
+                f"Accept header '{accept_value[:50]}' is unkeyed but affects cached response.",
+                {"name": name, "header": "Accept", "value": accept_value},
+                target_url,
+                cache_evidence=cache_evidence
+            ))
+
+        # Gate 4: saturation. A genuine unkeyed-Accept bug does not fire on five
+        # unrelated values at once (one of which is a plain `application/json`).
+        # If nearly all of them "work", the methodology broke, not the target.
+        if findings and len(findings) >= len(test_cases) - 1:
+            logger.info(
+                f"Accept polymorphism saturated ({len(findings)}/{len(test_cases)}) "
+                f"on {self.baseline.url} - suppressing as false positive"
+            )
+            return []
+
         return findings
     
     async def _connection_hop_by_hop(self, client: HttpClient) -> List[Dict]:
@@ -196,9 +226,7 @@ class ExoticPoisoner:
         Exploits hop-by-hop header stripping differences between cache and origin.
         """
         findings = []
-        cache_buster = f"cb={int(time.time())}_{random.randint(1000,9999)}"
-        target_url = self._add_cb(self.baseline.url, cache_buster)
-        
+
         # Headers to try marking as hop-by-hop (cache may strip them but origin uses them)
         hop_by_hop_tests = [
             ("Conn-XFH", "Connection", "X-Forwarded-Host"),
@@ -209,8 +237,15 @@ class ExoticPoisoner:
         ]
         
         for name, conn_header, target_header in hop_by_hop_tests:
+            # Each test needs its own cache entry and its own marker. Sharing one
+            # URL lets the first successful poison contaminate every later test,
+            # and sharing one marker makes the reflection unattributable -- both
+            # turn a single real bug into five findings.
+            cb_name, cb_value = new_cb()
+            target_url = add_cb(self.baseline.url, cb_name, cb_value)
+
             # Send with Connection header trying to mark target_header as hop-by-hop
-            poison_value = f"evil-{self.payload_id}.com"
+            poison_value = f"evil-{self.payload_id}-{name.lower()}.com"
             headers = {
                 **self.safe_headers,
                 conn_header: f"close, {target_header}",
@@ -312,46 +347,57 @@ class ExoticPoisoner:
         
         import urllib.parse
         parsed = urllib.parse.urlparse(self.baseline.url)
-        
+
+        if not parsed.path or len(parsed.path) <= 1:
+            return findings
+
+        # Cache-busted reference, not the clean-URL baseline (see control.py).
+        control = await control_probe(client, self.baseline.url, self.safe_headers)
+        if not control:
+            return findings
+        control_hash, _ = control
+
         for name, unicode_val, normalized in unicode_tests:
-            if parsed.path and len(parsed.path) > 1:
-                # Create path with unicode variant
-                mal_path = parsed.path.replace(normalized[0], unicode_val[1:] if len(unicode_val) > 1 else unicode_val, 1)
-                cache_buster = f"cb={int(time.time())}_{random.randint(1000,9999)}"
-                
-                mal_url = f"{parsed.scheme}://{parsed.netloc}{mal_path}"
-                if parsed.query:
-                    mal_url += f"?{parsed.query}&{cache_buster}"
-                else:
-                    mal_url += f"?{cache_buster}"
-                    
-                verify_url = self._add_cb(self.baseline.url, cache_buster)
-                
-                # Prime with unicode path
-                poison_resp = await client.request("GET", mal_url, headers=self.safe_headers)
-                if not poison_resp:
-                    continue
-                    
-                # Verify with normalized path
-                verify_resp = await client.request("GET", verify_url, headers=self.safe_headers)
-                if not verify_resp:
-                    continue
-                    
-                # If we get a cache HIT with different path, we have confusion
-                is_hit, evidence = CacheGuard.cache_hit_signal(verify_resp)
-                
-                if is_hit:
-                    poison_hash = hashlib.sha256(poison_resp.get('body', b'')).hexdigest()
-                    verify_hash = hashlib.sha256(verify_resp.get('body', b'')).hexdigest()
-                    
-                    if poison_hash == verify_hash and verify_hash != self.baseline.body_hash:
-                        findings.append(self._make_finding(
-                            "UnicodeNormalizationPoisoning",
-                            "HIGH",
-                            f"Unicode path {repr(unicode_val)} normalized to {repr(normalized)} at cache but treated differently by origin.",
-                            {"name": name, "type": "path", "mutation": "unicode", "value": unicode_val},
-                            mal_url
-                        ))
+            # Create path with unicode variant
+            mal_path = parsed.path.replace(normalized[0], unicode_val[1:] if len(unicode_val) > 1 else unicode_val, 1)
+            # Same buster on both URLs on purpose: that is what makes the two
+            # requests collide on a single cache key if normalization differs.
+            cb_name, cb_value = new_cb()
+            cache_buster = f"{cb_name}={cb_value}"
+
+            mal_url = f"{parsed.scheme}://{parsed.netloc}{mal_path}"
+            if parsed.query:
+                mal_url += f"?{parsed.query}&{cache_buster}"
+            else:
+                mal_url += f"?{cache_buster}"
+
+            verify_url = self._add_cb(self.baseline.url, cache_buster)
+
+            # Prime with unicode path
+            poison_resp = await client.request("GET", mal_url, headers=self.safe_headers)
+            if not poison_resp:
+                continue
+
+            # Verify with normalized path
+            verify_resp = await client.request("GET", verify_url, headers=self.safe_headers)
+            if not verify_resp:
+                continue
+
+            # If we get a cache HIT with different path, we have confusion
+            is_hit, evidence = CacheGuard.cache_hit_signal(verify_resp)
+
+            if is_hit:
+                poison_hash = stable_hash(poison_resp.get('body', b''), cb_value)
+                verify_hash = stable_hash(verify_resp.get('body', b''), cb_value)
+
+                if poison_hash == verify_hash and verify_hash != control_hash:
+                    findings.append(self._make_finding(
+                        "UnicodeNormalizationPoisoning",
+                        "HIGH",
+                        f"Unicode path {repr(unicode_val)} normalized to {repr(normalized)} at cache but treated differently by origin.",
+                        {"name": name, "type": "path", "mutation": "unicode", "value": unicode_val},
+                        mal_url
+                    ))
                         
         return findings
     

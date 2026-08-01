@@ -21,6 +21,11 @@ class CacheGuard:
     }
 
     CACHEABLE_STATUS = {200, 203, 204, 206, 301, 302, 304, 307, 308, 404, 410}
+    # Keep in sync with CacheValidator.cache_headers (cpd/logic/validator.py).
+    # A header that is good enough to conclude "this target has a cache" must
+    # also be good enough to conclude "this response was a hit", otherwise
+    # techniques that gate on cache_hit_signal() silently miss every finding on
+    # Drupal / Varnish / Akamai / nginx-cached targets.
     CACHE_HIT_HEADERS = {
         "cache-status",
         "cf-cache-status",
@@ -28,7 +33,16 @@ class CacheGuard:
         "x-cache",
         "x-cache-status",
         "x-cache-hits",
+        "x-cache-lookup",
+        "x-cache-detail",
         "x-served-by",
+        "x-drupal-cache",
+        "x-varnish",
+        "x-proxy-cache",
+        "x-proxy-cache-status",
+        "x-nginx-cache-status",
+        "x-fastly-cache-status",
+        "akamai-cache-status",
         "via",
         "age",
     }

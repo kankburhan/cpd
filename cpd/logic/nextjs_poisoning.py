@@ -30,6 +30,7 @@ from urllib.parse import urlparse, urlencode
 from cpd.http_client import HttpClient
 from cpd.logic.baseline import Baseline
 from cpd.logic.cache_guard import CacheGuard
+from cpd.logic.control import add_cb, control_probe, new_cb, stable_hash
 from cpd.utils.logger import logger
 
 
@@ -260,7 +261,15 @@ class NextJsPoisoner:
         cache entries with content from a different route.
         """
         findings = []
-        cache_buster = f"cb={int(time.time())}_{random.randint(1000, 9999)}"
+        cb_name, cb_value = new_cb()
+        cache_buster = f"{cb_name}={cb_value}"
+
+        # Cache-busted reference. Baseline.body_hash comes from the clean URL and
+        # cannot be compared against a `?cb=` probe -- see cpd/logic/control.py.
+        control = await control_probe(client, self.baseline.url, self.safe_headers)
+        if not control:
+            return findings
+        control_hash, _ = control
 
         param_tests = [
             ("nxtPslug", f"admin-{self.payload_id}"),
@@ -275,14 +284,17 @@ class NextJsPoisoner:
             if not resp or resp["status"] != 200:
                 continue
 
-            resp_hash = hashlib.sha256(resp.get("body", b"")).hexdigest()
-            if resp_hash != self.baseline.body_hash:
+            # Strip our own injected tokens: a target that echoes the query
+            # string back would otherwise always look "changed".
+            probe_tokens = (cb_value, param_value, f"{param_name}={param_value}")
+            resp_hash = stable_hash(resp.get("body", b""), *probe_tokens)
+            if resp_hash != control_hash:
                 verify_url = self._add_cb(self.baseline.url, cache_buster)
                 verify_resp = await client.request("GET", verify_url, headers=self.safe_headers)
                 if not verify_resp:
                     continue
 
-                verify_hash = hashlib.sha256(verify_resp.get("body", b"")).hexdigest()
+                verify_hash = stable_hash(verify_resp.get("body", b""), *probe_tokens)
                 if verify_hash == resp_hash:
                     is_hit, evidence = CacheGuard.cache_hit_signal(verify_resp)
                     if is_hit:
@@ -298,23 +310,40 @@ class NextJsPoisoner:
                             cache_evidence=evidence,
                         ))
 
+        no_mw_param = "__NEXT_PRIVATE_NO_MIDDLEWARE_RUN=1"
         no_mw_url = self._add_cb(self.baseline.url, cache_buster)
-        no_mw_url += "&__NEXT_PRIVATE_NO_MIDDLEWARE_RUN=1"
+        no_mw_url += f"&{no_mw_param}"
 
         resp = await client.request("GET", no_mw_url, headers=self.safe_headers)
         if resp and resp["status"] == 200:
-            resp_hash = hashlib.sha256(resp.get("body", b"")).hexdigest()
-            if resp_hash != self.baseline.body_hash:
-                findings.append(self._make_finding(
-                    "NextJS-PrivateMiddlewareSkip",
-                    "MEDIUM",
-                    "CVE-2026-44574: __NEXT_PRIVATE_NO_MIDDLEWARE_RUN=1 parameter altered "
-                    "response content, indicating middleware was skipped.",
-                    {"name": "CVE-2026-44574-no-middleware", "type": "query_param",
-                     "param": "__NEXT_PRIVATE_NO_MIDDLEWARE_RUN", "value": "1"},
-                    no_mw_url,
-                    cve="CVE-2026-44574",
-                ))
+            resp_hash = stable_hash(
+                resp.get("body", b""), cb_value, no_mw_param, "__NEXT_PRIVATE_NO_MIDDLEWARE_RUN"
+            )
+            # Altered content alone means nothing: any site that echoes its query
+            # string back into the page changes when you append a parameter. The
+            # claim is cache poisoning, so require the canonical URL to actually
+            # serve the altered body, from cache.
+            if resp_hash != control_hash:
+                verify_url = self._add_cb(self.baseline.url, cache_buster)
+                verify_resp = await client.request("GET", verify_url, headers=self.safe_headers)
+                verify_hash = stable_hash(
+                    (verify_resp or {}).get("body", b""),
+                    cb_value, no_mw_param, "__NEXT_PRIVATE_NO_MIDDLEWARE_RUN",
+                )
+                is_hit, evidence = CacheGuard.cache_hit_signal(verify_resp or {})
+
+                if verify_resp and verify_hash == resp_hash and is_hit:
+                    findings.append(self._make_finding(
+                        "NextJS-PrivateMiddlewareSkip",
+                        "MEDIUM",
+                        "CVE-2026-44574: __NEXT_PRIVATE_NO_MIDDLEWARE_RUN=1 parameter altered "
+                        "response content, indicating middleware was skipped.",
+                        {"name": "CVE-2026-44574-no-middleware", "type": "query_param",
+                         "param": "__NEXT_PRIVATE_NO_MIDDLEWARE_RUN", "value": "1"},
+                        no_mw_url,
+                        cve="CVE-2026-44574",
+                        cache_evidence=evidence,
+                    ))
 
         return findings
 
@@ -325,8 +354,8 @@ class NextJsPoisoner:
         Unfiltered next-resume header triggers PPR resume codepath, producing
         a different response that gets cached for all users.
         """
-        cache_buster = f"cb={int(time.time())}_{random.randint(1000, 9999)}"
-        target_url = self._add_cb(self.baseline.url, cache_buster)
+        cb_name, cb_value = new_cb()
+        target_url = add_cb(self.baseline.url, cb_name, cb_value)
 
         headers = {**self.safe_headers, "next-resume": "1"}
 
@@ -334,27 +363,35 @@ class NextJsPoisoner:
         if not poison_resp:
             return None
 
-        poison_hash = hashlib.sha256(poison_resp.get("body", b"")).hexdigest()
-
-        if poison_hash != self.baseline.body_hash and poison_resp["status"] == 200:
-            verify_resp = await client.request("GET", target_url, headers=self.safe_headers)
-            if not verify_resp:
+        # Only the content-mismatch path needs a control; the CPDoS path below
+        # compares status codes and would just waste a request.
+        if poison_resp["status"] == 200:
+            control = await control_probe(client, self.baseline.url, self.safe_headers)
+            if not control:
                 return None
+            control_hash, _ = control
 
-            verify_hash = hashlib.sha256(verify_resp.get("body", b"")).hexdigest()
-            if verify_hash == poison_hash:
-                is_hit, evidence = CacheGuard.cache_hit_signal(verify_resp)
-                if is_hit:
-                    return self._make_finding(
-                        "NextJS-ResumePoisoning",
-                        "HIGH",
-                        "CVE-2026-44579: next-resume header caused different response content "
-                        "to be cached. PPR resume-rendered content served to all users.",
-                        {"name": "CVE-2026-44579", "header": "next-resume", "value": "1"},
-                        target_url,
-                        cve="CVE-2026-44579",
-                        cache_evidence=evidence,
-                    )
+            poison_hash = stable_hash(poison_resp.get("body", b""), cb_value)
+
+            if poison_hash != control_hash:
+                verify_resp = await client.request("GET", target_url, headers=self.safe_headers)
+                if not verify_resp:
+                    return None
+
+                verify_hash = stable_hash(verify_resp.get("body", b""), cb_value)
+                if verify_hash == poison_hash:
+                    is_hit, evidence = CacheGuard.cache_hit_signal(verify_resp)
+                    if is_hit:
+                        return self._make_finding(
+                            "NextJS-ResumePoisoning",
+                            "HIGH",
+                            "CVE-2026-44579: next-resume header caused different response content "
+                            "to be cached. PPR resume-rendered content served to all users.",
+                            {"name": "CVE-2026-44579", "header": "next-resume", "value": "1"},
+                            target_url,
+                            cve="CVE-2026-44579",
+                            cache_evidence=evidence,
+                        )
 
         if poison_resp["status"] in [400, 500]:
             verify_resp = await client.request("GET", target_url, headers=self.safe_headers)

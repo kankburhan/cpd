@@ -19,6 +19,7 @@ from cpd.logic.smuggling import SmugglingDetector
 from cpd.logic.normalization import NormalizationTester
 from cpd.logic.blind import BlindCachePoisoner
 from cpd.logic.probing import CacheProber
+from cpd.logic.control import add_cb, control_probe, new_cb, stable_hash
 from cpd.logic.exotic_poisoning import ExoticPoisoner
 from cpd.logic.cpd_dos import CpDoSDetector
 from cpd.logic.cache_deception_v2 import CacheDeceptionV2
@@ -273,7 +274,8 @@ class Poisoner:
              self.heuristic_headers.add(generic_header)
 
     async def _attempt_poison(self, client: HttpClient, signature: Dict[str, str]) -> Optional[Dict]:
-        cache_buster = f"cb={int(time.time())}_{random.randint(1000,9999)}"
+        cb_name, cb_value = new_cb()
+        cache_buster = f"{cb_name}={cb_value}"
         headers = self.safe_headers.copy()
         
         # --- 1. Prepare Request ---
@@ -398,7 +400,9 @@ class Poisoner:
         # Optimization: If poison response == baseline, unlikely to have worked (normalization)
         # Exception: Blind poisoning where response is same but cache internal state changed (handled elsewhere)
         if signature.get("type") in ["path", "method_override"]:
-            if resp['body'] == self.baseline.body:
+            # Compare with our cache buster neutralised, otherwise a target that
+            # echoes the query string never matches and the shortcut never fires.
+            if stable_hash(resp['body'], cb_value) == stable_hash(self.baseline.body):
                  return None
 
         # --- 4. Verify Attempt (Clean Request) ---
@@ -418,21 +422,23 @@ class Poisoner:
         
         # 1. Path/method override caused clean URL to serve different content?
         if signature.get("type") in ["path", "method_override"]:
-            verify_hash = hashlib.sha256(verify_resp['body']).hexdigest()
+            verify_hash = stable_hash(verify_resp['body'], cb_value)
             # If verify matches poison body BUT differs from baseline body
-            if verify_resp['body'] == resp['body'] and verify_hash != self.baseline.body_hash:
+            if verify_resp['body'] == resp['body'] and verify_hash != stable_hash(self.baseline.body):
                  # Double check stability (re-request verify)
                  verify_resp_2 = await client.request("GET", verify_url, headers=self.safe_headers)
                  if verify_resp_2 and verify_resp_2['body'] == verify_resp['body']:
-                     
+
                      # 3. Fresh Baseline Check (Drift Detection)
-                     fresh_cb = f"cb={int(time.time())}_{random.randint(1000,9999)}"
-                     fresh_url = f"{self.baseline.url}?{fresh_cb}" if '?' not in self.baseline.url else f"{self.baseline.url}&{fresh_cb}"
+                     fresh_cb_name, fresh_cb_value = new_cb()
+                     fresh_url = add_cb(self.baseline.url, fresh_cb_name, fresh_cb_value)
                      fresh_resp = await client.request("GET", fresh_url, headers=self.safe_headers)
-                     
+
                      if fresh_resp:
-                         fresh_hash = hashlib.sha256(fresh_resp['body']).hexdigest()
-                         
+                         # Both sides buster-neutralised, so a reflected `?cb=` is
+                         # not mistaken for the target drifting or being chaotic.
+                         fresh_hash = stable_hash(fresh_resp['body'], fresh_cb_value)
+
                          # If fresh baseline matches verify response, the site just changed (Drift)
                          if fresh_hash == verify_hash:
                              logger.debug(f"Ignored {signature['name']} - Target appears to have drifted (fresh baseline matches verification)")
@@ -453,7 +459,7 @@ class Poisoner:
                                  return None
                          
                          # If fresh baseline changed to something else entirely (Chaotic)
-                         if fresh_hash != self.baseline.body_hash:
+                         if fresh_hash != stable_hash(self.baseline.body):
                              logger.debug(f"Ignored {signature['name']} - Target appears chaotic (fresh baseline != original baseline)")
                              return None
 
