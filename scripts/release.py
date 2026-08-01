@@ -63,22 +63,18 @@ def update_changelog(new: str) -> None:
     if not unreleased:
         print("  WARNING: [Unreleased] section is empty — release entry will have no notes.")
 
-    new_entry = f"## [{new}] - {today}\n\n{unreleased}\n" if unreleased else f"## [{new}] - {today}\n"
+    # Locate the whole Unreleased block: header, body, up to the next release
+    # header (or EOF). Rewriting it in one shot moves the body into the new
+    # release entry and leaves Unreleased empty.
+    m = re.search(r"## \[Unreleased\]\n(.*?)(?=\n## \[|\Z)", text, re.DOTALL)
+    if not m:
+        sys.exit("ERROR: [Unreleased] section not found in CHANGELOG.md")
 
-    # Replace "## [Unreleased]\n" with the placeholder + new release entry
-    updated = text.replace(
-        "## [Unreleased]\n",
-        "## [Unreleased]\n\n" + new_entry,
-        1,
-    )
+    new_entry = f"## [{new}] - {today}\n"
+    if unreleased:
+        new_entry += f"\n{unreleased}\n"
 
-    # Clear the Unreleased section (keep the header, empty the body)
-    updated = re.sub(
-        r"(## \[Unreleased\]\n\n)" + re.escape(new_entry),
-        r"\1",
-        updated,
-        count=1,
-    )
+    updated = text[: m.start()] + f"## [Unreleased]\n\n{new_entry}" + text[m.end() :]
 
     CHANGELOG.write_text(updated)
 

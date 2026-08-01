@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `cpd/logic/control.py`: `stable_hash()` (hashes with our own cache-buster token neutralised), `control_probe()` (fetches a second cache-busted copy with clean headers as the correct "did this change anything?" reference), and `new_cb()` (fixed-width buster so a reflection cannot shift response length).
+
+### Fixed
+- Probes are now compared against a cache-busted control instead of the clean-URL baseline. Every technique appends its own `?cb=...`, so on any target that reflects the query string back into the page (Drupal `drupal-settings-json.currentQuery`, Next.js `__NEXT_DATA__`, Rails, most analytics bootstraps) the probe body differed from the baseline on every request and every signature fired. Observed on a Drupal 11 site as five false-positive HIGH `AcceptHeaderPoisoning` findings.
+- The same wrong reference ran in the other direction in `cache_deception_v2.py`, where `resp_hash == baseline.body_hash` could never be true on such a target, silently dropping every deception finding. `poison.py`'s drift guard discarded real findings as "chaotic" for the same reason.
+- Accept / h2c / no-middleware checks now require the clean request to actually receive the poisoned body *and* a cache hit. Content change alone is origin behaviour, not poisoning.
+- Accept polymorphism suppresses itself when nearly all variants fire, since five unrelated values "working" at once means the methodology broke.
+- Hop-by-hop sub-tests get their own cache entry and marker. Sharing one URL let the first poison sit in the cache and be re-read by the rest, turning one bug into five.
+- `CacheKeyNormalization` ignores variants the client was redirected away from; an uppercase URL that 301s to canonical is the redirect working.
+- `CACHE_HIT_HEADERS` was missing `X-Drupal-Cache`, `X-Varnish`, Akamai and the nginx/proxy variants that `CacheValidator` already recognised, so the new cache-hit gates would have gone blind on exactly those targets.
+- `control_probe()` swallows transport errors: losing the control is a skip, not a scan-aborting exception.
+- `scripts/release.py` no longer drops the new release entry from the changelog. `update_changelog()` inserted the entry and then removed it again with a regex that matched what it had just written, which is why v0.10.2 has no changelog section.
+
+### Changed
+- Repaired 16 long-standing test failures in the poisoning suite. Tests that drove `Poisoner.run()` are retargeted at `_attempt_poison`, the unit they describe, since `run()` now executes ~10 sub-detectors first and exhausted their scripted mocks. Assertions on the old `"POTENTIAL VULNERABILITY: X"` detail string moved to the `vulnerability` key. Five tests in `test_poison_enhanced.py` describe features that were never implemented (they failed on the commit that introduced them) and are now `xfail(strict=True)` so the gaps stay documented.
 
 ## [0.10.1] - 2026-05-09
 
