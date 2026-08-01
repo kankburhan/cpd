@@ -51,8 +51,9 @@ async def test_nextjs_prefetch_poisoning(mock_client, baseline):
     
     # Let's test just one specific signature to be deterministic in this unit test
     sig_to_test = "NextJS-Middleware-Prefetch"
-    poisoner.signatures = [s for s in poisoner.signatures if s["name"] == sig_to_test]
-    
+    sigs = [s for s in poisoner.signatures if s["name"] == sig_to_test]
+    assert len(sigs) == 1
+
     # Mock Responses:
     # 1. Poison Attempt (Request with Header) -> Returns JSON
     # 2. Verify 1 (Clean Request) -> Returns JSON (Poisoned!)
@@ -66,12 +67,11 @@ async def test_nextjs_prefetch_poisoning(mock_client, baseline):
         {"status": 200, "headers": {"Content-Type": "text/html"}, "body": b"<html><body>Content A - This is a much longer content to ensure that the length difference check passes...</body></html>", "url": "http://example.com/page?cb=fresh"}
     ]
     
-    findings = await poisoner.run(mock_client)
-    
-    assert len(findings) == 1
-    finding = findings[0]
+    finding = await poisoner._attempt_poison(mock_client, sigs[0])
+
+    assert finding is not None
     assert finding['signature']['name'] == sig_to_test
-    assert "POTENTIAL VULNERABILITY: MethodOverridePoisoning" in finding['details']
+    assert finding['vulnerability'] == "MethodOverridePoisoning"
     assert finding['target_url'] and finding['verify_url']
 
 @pytest.mark.asyncio
@@ -84,12 +84,13 @@ async def test_nextjs_prefetch_safe(mock_client, baseline):
     """
     poisoner = Poisoner(baseline)
     sig_to_test = "NextJS-Middleware-Prefetch"
-    poisoner.signatures = [s for s in poisoner.signatures if s["name"] == sig_to_test]
-    
+    sigs = [s for s in poisoner.signatures if s["name"] == sig_to_test]
+    assert len(sigs) == 1
+
     mock_client.request.side_effect = [
         {"status": 200, "headers": {"Content-Type": "application/json"}, "body": b'{"pageProps": "..."}', "url": "http://example.com/page?cb=1"},
         {"status": 200, "headers": {"Content-Type": "text/html"}, "body": b"<html><body>Content A - This is a much longer content to ensure that the length difference check passes...</body></html>", "url": "http://example.com/page?cb=1"},
     ]
     
-    findings = await poisoner.run(mock_client)
-    assert len(findings) == 0
+    finding = await poisoner._attempt_poison(mock_client, sigs[0])
+    assert finding is None

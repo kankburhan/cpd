@@ -1,3 +1,5 @@
+import hashlib
+
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 from cpd.logic.poison import Poisoner
@@ -11,23 +13,25 @@ def mock_client():
 
 @pytest.fixture
 def baseline():
+    body = b"Content A"
     return Baseline(
         url="http://example.com/path/to/resource",
         status=200,
         headers={},
-        body_hash="hash_A", 
-        body=b"Content A"
+        # Must match body: BaselineAnalyzer always derives one from the other.
+        body_hash=hashlib.sha256(body).hexdigest(),
+        body=body
     )
 
 @pytest.mark.asyncio
 async def test_mutation_append_css(mock_client, baseline):
     poisoner = Poisoner(baseline)
-    poisoner.signatures = [{"name": "WCD", "type": "path", "mutation": "append_css", "value": "/static/style.css?poison=123"}]
-    
+    sig = {"name": "WCD", "type": "path", "mutation": "append_css", "value": "/static/style.css?poison=123"}
+
     mock_client.request.return_value = {"status": 200, "headers": {}, "body": b"A", "url": "url"}
-    
-    await poisoner.run(mock_client)
-    
+
+    await poisoner._attempt_poison(mock_client, sig)
+
     # Check target URL construction
     call_args = mock_client.request.call_args_list[0]
     target_url = call_args[0][1] # (method, url, ...)
@@ -38,12 +42,12 @@ async def test_mutation_append_css(mock_client, baseline):
 @pytest.mark.asyncio
 async def test_mutation_dot_segment(mock_client, baseline):
     poisoner = Poisoner(baseline)
-    poisoner.signatures = [{"name": "Dot", "type": "path", "mutation": "dot_segment", "value": "/./poison"}]
-    
+    sig = {"name": "Dot", "type": "path", "mutation": "dot_segment", "value": "/./poison"}
+
     mock_client.request.return_value = {"status": 200, "headers": {}, "body": b"A", "url": "url"}
-    
-    await poisoner.run(mock_client)
-    
+
+    await poisoner._attempt_poison(mock_client, sig)
+
     call_args = mock_client.request.call_args_list[0]
     target_url = call_args[0][1]
     # Expected: /path/to/resource/./poison
@@ -52,12 +56,12 @@ async def test_mutation_dot_segment(mock_client, baseline):
 @pytest.mark.asyncio
 async def test_mutation_encoded_slash(mock_client, baseline):
     poisoner = Poisoner(baseline)
-    poisoner.signatures = [{"name": "EncodedSlash", "type": "path", "mutation": "encoded_slash", "value": "/%2fpoison"}]
-    
+    sig = {"name": "EncodedSlash", "type": "path", "mutation": "encoded_slash", "value": "/%2fpoison"}
+
     mock_client.request.return_value = {"status": 200, "headers": {}, "body": b"A", "url": "url"}
-    
-    await poisoner.run(mock_client)
-    
+
+    await poisoner._attempt_poison(mock_client, sig)
+
     call_args = mock_client.request.call_args_list[0]
     target_url = call_args[0][1]
     assert "/path/to/resource/%2fpoison" in target_url

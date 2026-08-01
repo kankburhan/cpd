@@ -34,8 +34,9 @@ async def test_range_poisoning(mock_client, baseline):
     Fresh Baseline: Returns Full Content (A)
     """
     poisoner = Poisoner(baseline)
-    poisoner.signatures = [s for s in poisoner.signatures if s["name"] == "Range-Poisoning"]
-    
+    sigs = [s for s in poisoner.signatures if s["name"] == "Range-Poisoning"]
+    assert len(sigs) == 1
+
     # Range response is usually just first byte, e.g., "<"
     partial_body = b"<"
     
@@ -46,11 +47,11 @@ async def test_range_poisoning(mock_client, baseline):
         {"status": 200, "headers": {"Content-Type": "text/html"}, "body": baseline.body, "url": "http://example.com/page?cb=fresh"}
     ]
     
-    findings = await poisoner.run(mock_client)
-    
-    assert len(findings) == 1
-    assert findings[0]['signature']['name'] == "Range-Poisoning"
-    assert "POTENTIAL VULNERABILITY: MethodOverridePoisoning" in findings[0]['details']
+    finding = await poisoner._attempt_poison(mock_client, sigs[0])
+
+    assert finding is not None
+    assert finding['signature']['name'] == "Range-Poisoning"
+    assert finding['vulnerability'] == "MethodOverridePoisoning"
 
 @pytest.mark.asyncio
 async def test_range_safe(mock_client, baseline):
@@ -60,8 +61,9 @@ async def test_range_safe(mock_client, baseline):
     Verify 1: Returns Full Content (Not Cached)
     """
     poisoner = Poisoner(baseline)
-    poisoner.signatures = [s for s in poisoner.signatures if s["name"] == "Range-Poisoning"]
-    
+    sigs = [s for s in poisoner.signatures if s["name"] == "Range-Poisoning"]
+    assert len(sigs) == 1
+
     partial_body = b"<"
     
     mock_client.request.side_effect = [
@@ -69,5 +71,5 @@ async def test_range_safe(mock_client, baseline):
         {"status": 200, "headers": {"Content-Type": "text/html"}, "body": baseline.body, "url": "http://example.com/page?cb=1"},
     ]
     
-    findings = await poisoner.run(mock_client)
-    assert len(findings) == 0
+    finding = await poisoner._attempt_poison(mock_client, sigs[0])
+    assert finding is None

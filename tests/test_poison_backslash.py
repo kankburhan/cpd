@@ -34,8 +34,9 @@ async def test_backslash_last_slash(mock_client, baseline):
     Fresh Baseline: Returns Content A
     """
     poisoner = Poisoner(baseline)
-    poisoner.signatures = [s for s in poisoner.signatures if s["name"] == "Backslash-Last-Path-Replace"]
-    
+    sigs = [s for s in poisoner.signatures if s["name"] == "Backslash-Last-Path-Replace"]
+    assert len(sigs) == 1
+
     # Make poisoned body significantly larger to bypass the < 20 bytes diff check
     poisoned_body = b"<html><body>Poisoned Content - This content must be significantly different in length to avoid the heuristic check that ignores small differences as benign dynamic content.</body></html>"
     
@@ -50,12 +51,12 @@ async def test_backslash_last_slash(mock_client, baseline):
         {"status": 200, "headers": {}, "body": baseline.body, "url": "http://example.com/foo/bar/baz?cb=fresh"}
     ]
     
-    findings = await poisoner.run(mock_client)
-    
-    assert len(findings) == 1
-    assert findings[0]['signature']['name'] == "Backslash-Last-Path-Replace"
-    assert "POTENTIAL VULNERABILITY: PathNormalizationPoisoning" in findings[0]['details']
-    assert "\\baz" in findings[0]['target_url']
+    finding = await poisoner._attempt_poison(mock_client, sigs[0])
+
+    assert finding is not None
+    assert finding['signature']['name'] == "Backslash-Last-Path-Replace"
+    assert finding['vulnerability'] == "PathNormalizationPoisoning"
+    assert "\\baz" in finding['target_url']
 
 @pytest.mark.asyncio
 async def test_backslash_last_slash_root(mock_client):
@@ -74,8 +75,9 @@ async def test_backslash_last_slash_root(mock_client):
     )
     
     poisoner = Poisoner(baseline)
-    poisoner.signatures = [s for s in poisoner.signatures if s["name"] == "Backslash-Last-Path-Replace"]
-    
+    sigs = [s for s in poisoner.signatures if s["name"] == "Backslash-Last-Path-Replace"]
+    assert len(sigs) == 1
+
     # logic should convert / to \
     # Poisoned content must be significantly different length (> 20 bytes diff)
     poisoned_body = b"Poisoned Content that is definitely longer than 20 bytes to pass the heuristic check."
@@ -87,6 +89,6 @@ async def test_backslash_last_slash_root(mock_client):
         {"status": 200, "headers": {}, "body": body, "url": "http://example.com/?cb=fresh"}
     ]
     
-    findings = await poisoner.run(mock_client)
-    assert len(findings) == 1
-    assert "\\" in findings[0]['target_url'] or "%5C" in findings[0]['target_url']
+    finding = await poisoner._attempt_poison(mock_client, sigs[0])
+    assert finding is not None
+    assert "\\" in finding['target_url'] or "%5C" in finding['target_url']
