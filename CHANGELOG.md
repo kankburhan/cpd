@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- `CacheDeceptionV2-PathTraversal` no longer reports findings on responses the cache is forbidden to store. `_test_path_traversal_static` computed `is_cached` and never read it, emitting HIGH regardless — its three sibling techniques in the same module all gate correctly, which is why traversal was the only one to fire. It now follows the two-tier model already used by `_test_delimiter_confusion`: cache HIT → HIGH, cacheable without a HIT → MEDIUM, not cacheable → not reported. Observed on an Imperva-protected site as five false HIGH findings against a `no-cache, no-store` WAF challenge page.
+- Cache deception v2 now runs a negative control before any mutation and skips the whole module when the target returns the same body for an arbitrary nonexistent path. Every technique in the module concludes from "probe body == control body", which is guaranteed and meaningless on an SPA fallback, soft 404, or WAF interstitial. Previously only the cache gates on the other three techniques kept them quiet; a catch-all target behind a CDN setting `X-Cache: HIT` would have produced false positives across all four.
+
 ## [0.11.0] - 2026-08-02
 
 ### Added
