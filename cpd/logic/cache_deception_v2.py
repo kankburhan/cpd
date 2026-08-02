@@ -87,12 +87,54 @@ class CacheDeceptionV2:
                     self._control_hash = control[0]
             return self._control_hash
 
+    async def _serves_identical_content_for_any_path(self, client: HttpClient) -> bool:
+        """
+        True when an arbitrary nonexistent path returns the control body.
+
+        Every technique in this module concludes from ``probe_hash ==
+        control_hash``. On a target that answers 200 with one identical body for
+        *any* path -- an SPA fallback, a soft 404, or a WAF interstitial -- that
+        equality is guaranteed and carries no information whatsoever, so every
+        mutation would be reported. Observed live against an Imperva-protected
+        site: the WAF challenge page was served for the baseline, for each
+        traversal payload, and for a random path, and all five traversal
+        mutations were reported HIGH.
+
+        This is a negative control: if it fires, no deception conclusion is
+        possible on this target and the module must stay silent.
+        """
+        control_hash = await self._get_control_hash(client)
+        if control_hash is None:
+            return False
+
+        scheme_host = f"{self._parsed.scheme}://{self._parsed.netloc}"
+        nonce = uuid.uuid4().hex[:12]
+        cb_name, cb_value = new_cb()
+        probe_url = f"{scheme_host}/cpd-nonexistent-{nonce}?{cb_name}={cb_value}"
+
+        try:
+            resp = await client.request("GET", probe_url, headers=self.safe_headers)
+        except Exception:
+            return False
+        if not resp or resp.get("status") != 200:
+            return False
+
+        return stable_hash(resp.get("body", b""), cb_value) == control_hash
+
     async def run(self, client: HttpClient) -> List[Dict]:
         """Execute all cache deception v2 detection techniques."""
         findings = []
 
         if await self._get_control_hash(client) is None:
             logger.debug("Cache deception v2: control probe failed, skipping")
+            return findings
+
+        if await self._serves_identical_content_for_any_path(client):
+            logger.info(
+                "Cache deception v2 skipped - target serves identical content for "
+                "arbitrary paths (SPA fallback, soft 404 or WAF interstitial), so "
+                "a body match against the control proves nothing"
+            )
             return findings
 
         tasks = [
@@ -232,19 +274,36 @@ class CacheDeceptionV2:
                 continue
 
             resp_hash = stable_hash(resp.get("body", b""), cb_value)
+            if resp_hash != control_hash:
+                continue
 
-            if resp_hash == control_hash:
-                is_cached, evidence = CacheGuard.cache_hit_signal(resp)
+            # Matching the control body is necessary but nowhere near sufficient:
+            # the whole technique is "the CDN will store this under a static-looking
+            # key", so a response the cache is forbidden to store is not deception.
+            # Mirrors the two-tier model in _test_delimiter_confusion.
+            is_cached, evidence = CacheGuard.cache_hit_signal(resp)
+            cacheable, cacheable_reason = CacheGuard.is_cacheable(resp, resp["status"])
 
-                findings.append(self._make_finding(
-                    "CacheDeceptionV2-PathTraversal",
-                    "HIGH",
-                    f"Path traversal '{mal_path}' returns same content as authenticated endpoint. "
-                    f"CDN may cache this under a static-appearing URL, exposing sensitive data.",
-                    {"name": name, "type": "path_traversal", "mutation": mal_path},
-                    target_url,
-                    cache_evidence=evidence,
-                ))
+            if is_cached:
+                severity, qualifier = "HIGH", "Response was served from cache"
+            elif cacheable:
+                severity, qualifier = "MEDIUM", f"Response is cacheable ({cacheable_reason})"
+            else:
+                logger.debug(
+                    f"Ignored traversal {mal_path} - not cacheable ({cacheable_reason})"
+                )
+                continue
+
+            findings.append(self._make_finding(
+                "CacheDeceptionV2-PathTraversal",
+                severity,
+                f"Path traversal '{mal_path}' returns same content as authenticated endpoint. "
+                f"CDN may cache this under a static-appearing URL, exposing sensitive data. "
+                f"{qualifier}.",
+                {"name": name, "type": "path_traversal", "mutation": mal_path},
+                target_url,
+                cache_evidence=evidence,
+            ))
 
         return findings
 
